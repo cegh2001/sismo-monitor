@@ -223,7 +223,7 @@ func (m Model) View() string {
 		}
 		for i := start; i > end; i-- {
 			ev := m.Sismos[i]
-			tStr := ev.Time.Format("15:04:05")
+			tStr := ev.Time.Local().Format("15:04:05")
 			s += fmt.Sprintf("  %-10s  %-8s  %-6.1f  %-8.1f  %-8.1f  %-30s\n",
 				ev.Source, tStr, ev.Magnitude, ev.Depth, ev.Distance, truncate(ev.Location, 30))
 		}
