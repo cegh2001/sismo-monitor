@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bufio"
 	"os"
+	"strings"
 )
 
 // Config holds configuration parameters for the seismic monitor.
@@ -13,8 +15,38 @@ type Config struct {
 	USGSHistoricalURL string
 }
 
+// loadDotEnv reads key-value pairs from a local .env file and injects them into environment variables.
+func loadDotEnv() {
+	file, err := os.Open(".env")
+	if err != nil {
+		return // Silently skip if file does not exist
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		val := strings.TrimSpace(parts[1])
+
+		// Strip surrounding quotes
+		val = strings.Trim(val, `"'`)
+
+		os.Setenv(key, val)
+	}
+}
+
 // Load loads the configuration from environment variables.
 func Load() *Config {
+	loadDotEnv()
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

@@ -22,5 +22,7 @@ Thumbs.db
 # Local database files
 data/
 run.ps1
+.env
+
 
 
