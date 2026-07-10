@@ -108,12 +108,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				triggerSimulation(m.Port, 3.0, 10.57, -66.94, "Swarmland (Sim E)"),
 			)
 		case "i":
-			m.statusMsg = "Triggering instability test alerts (3 events in G_0_0)..."
-			return m, tea.Batch(
-				triggerSimulationWithCell(m.Port, 2.5, 10.60, -66.93, "La Guaira Port (Instability A)", "G_0_0"),
-				triggerSimulationWithCell(m.Port, 2.6, 10.60, -66.93, "La Guaira Port (Instability B)", "G_0_0"),
-				triggerSimulationWithCell(m.Port, 2.7, 10.60, -66.93, "La Guaira Port (Instability C)", "G_0_0"),
-			)
+			m.statusMsg = "Triggering instability test alerts (5 hist, 3 swarm)..."
+			return m, triggerInstabilitySimulation(m.Port)
 		case "up":
 			if len(m.Logs) > 10 {
 				m.logScroll++
@@ -240,6 +236,25 @@ func triggerSimulationWithCell(port string, mag, lat, lon float64, loc string, g
 			return MsgLog(fmt.Sprintf("TUI: Simulation trigger status: %d", resp.StatusCode))
 		}
 		return MsgLog(fmt.Sprintf("TUI: Sim event with cell %s dispatched: Mag %.1f Mw", gridCell, mag))
+	}
+}
+
+func triggerInstabilitySimulation(port string) tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("http://localhost:%s/test-alert", port)
+		payload := map[string]interface{}{
+			"instability_test": true,
+		}
+		body, _ := json.Marshal(payload)
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			return MsgLog(fmt.Sprintf("TUI: Instability trigger failed: %v", err))
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return MsgLog(fmt.Sprintf("TUI: Instability trigger status: %d", resp.StatusCode))
+		}
+		return MsgLog("TUI: Instability simulation batch successfully dispatched")
 	}
 }
 
