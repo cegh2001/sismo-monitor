@@ -204,7 +204,7 @@ func (m Model) View() string {
 	s += "================================================================================\n"
 	s += "                    VENEZUELAN SEISMIC MONITOR & ALERT SYSTEM\n"
 	s += "================================================================================\n"
-	s += fmt.Sprintf("  STATUS: Active | EMSC WS: Connected | Funvisis Scraper: Polling | API: :%s\n", m.Port)
+	s += fmt.Sprintf("  STATUS: Active | EMSC WS: Connected | Funvisis Scraper: Polling | API: 127.0.0.1:%s\n", m.Port)
 	s += fmt.Sprintf("  ACTION: %s\n", m.statusMsg)
 	s += "--------------------------------------------------------------------------------\n"
 	s += "  STATISTICS:\n"

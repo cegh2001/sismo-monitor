@@ -44,7 +44,7 @@ func (s *SimulationServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/test-alert", s.handleTestAlert)
 
 	server := &http.Server{
-		Addr:    ":" + s.port,
+		Addr:    "127.0.0.1:" + s.port,
 		Handler: mux,
 	}
 
