@@ -83,8 +83,16 @@ func (g *GapAnalyzer) Add(s Sismo) (bool, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	// 0. Deduplicate: check if the sismo is already in the database
+	for _, prev := range g.sismos {
+		if prev.ID == s.ID && s.ID != "" {
+			return false, nil
+		}
+	}
+
 	if s.GridCell == "" || s.GridCell == "OUT_OF_BOUNDS" {
 		g.sismos = append(g.sismos, s)
+		g.cleanupOldSismosLocked(time.Now())
 		err := g.saveLocked()
 		return false, err
 	}
@@ -120,8 +128,20 @@ func (g *GapAnalyzer) Add(s Sismo) (bool, error) {
 	}
 
 	g.sismos = append(g.sismos, s)
+	g.cleanupOldSismosLocked(time.Now())
 	err := g.saveLocked()
 	return trigger, err
+}
+
+func (g *GapAnalyzer) cleanupOldSismosLocked(now time.Time) {
+	twoYearsAgo := now.AddDate(-2, 0, 0)
+	var keep []Sismo
+	for _, s := range g.sismos {
+		if s.Time.After(twoYearsAgo) {
+			keep = append(keep, s)
+		}
+	}
+	g.sismos = keep
 }
 
 // IsLocked checks if a grid cell is currently locked at time 'now'.
