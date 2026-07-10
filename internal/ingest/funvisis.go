@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,7 +29,7 @@ type FunvisisScraper struct {
 // NewFunvisisScraper creates a new FunvisisScraper.
 func NewFunvisisScraper(logger func(string, ...interface{}), errNotifier func(error)) *FunvisisScraper {
 	return &FunvisisScraper{
-		url:          "http://www.funvisis.gob.ve/index.php",
+		url:          "http://www.funvisis.gob.ve/maravilla.json",
 		pollInterval: 120 * time.Second, // Poll every 2 minutes
 		client:       &http.Client{Timeout: 15 * time.Second},
 		logger:       logger,
@@ -76,7 +77,7 @@ func (s *FunvisisScraper) scrapeAndDispatch(out chan<- alert.Sismo) {
 	}
 }
 
-// Scrape performs the HTTP request and parses the HTML body.
+// Scrape performs the HTTP request and parses the HTML or JSON body.
 func (s *FunvisisScraper) Scrape() ([]alert.Sismo, error) {
 	resp, err := s.client.Get(s.url)
 	if err != nil {
@@ -93,8 +94,13 @@ func (s *FunvisisScraper) Scrape() ([]alert.Sismo, error) {
 		return nil, fmt.Errorf("reading body failed: %w", err)
 	}
 
-	htmlContent := string(body)
-	events, err := s.ParseHTML(htmlContent)
+	content := string(body)
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return s.ParseJSON(trimmed)
+	}
+
+	events, err := s.ParseHTML(content)
 	if err != nil {
 		return nil, fmt.Errorf("HTML parsing failed: %w", err)
 	}
@@ -254,4 +260,76 @@ func (s *FunvisisScraper) log(format string, args ...interface{}) {
 	if s.logger != nil {
 		s.logger(format, args...)
 	}
+}
+
+type FunvisisGeoJSON struct {
+	Type     string            `json:"type"`
+	Features []FunvisisFeature `json:"features"`
+}
+
+type FunvisisFeature struct {
+	Type       string             `json:"type"`
+	Geometry   FunvisisGeometry   `json:"geometry"`
+	Properties FunvisisProperties `json:"properties"`
+}
+
+type FunvisisGeometry struct {
+	Type        string    `json:"type"`
+	Coordinates []float64 `json:"coordinates"`
+}
+
+type FunvisisProperties struct {
+	PhoneFormatted string `json:"phoneFormatted"`
+	Phone          string `json:"phone"` // Magnitude
+	Address        string `json:"address"`
+	City           string `json:"city"`       // Time HH:MM
+	PostalCode     string `json:"postalCode"` // Date DD-MM-YYYY
+	State          string `json:"state"`      // Depth
+	Lat            string `json:"lat"`
+	Long           string `json:"long"`
+}
+
+// ParseJSON parses the GeoJSON payload returned by Funvisis.
+func (s *FunvisisScraper) ParseJSON(jsonStr string) ([]alert.Sismo, error) {
+	var geoJSON FunvisisGeoJSON
+	if err := json.Unmarshal([]byte(jsonStr), &geoJSON); err != nil {
+		return nil, fmt.Errorf("unmarshal GeoJSON failed: %w", err)
+	}
+
+	if len(geoJSON.Features) == 0 {
+		return nil, fmt.Errorf("no features found in GeoJSON")
+	}
+
+	var events []alert.Sismo
+	for _, f := range geoJSON.Features {
+		props := f.Properties
+
+		dateStr := props.PostalCode
+		timeStr := props.City
+		latStr := props.Lat
+		lonStr := props.Long
+		depthStr := props.State
+		magStr := props.Phone
+		locStr := props.Address
+
+		// Fallback to geometry coordinates if properties are empty
+		if latStr == "" || lonStr == "" {
+			if len(f.Geometry.Coordinates) >= 2 {
+				lonStr = fmt.Sprintf("%f", f.Geometry.Coordinates[0])
+				latStr = fmt.Sprintf("%f", f.Geometry.Coordinates[1])
+			}
+		}
+
+		sismo, err := s.parseRowData(dateStr, timeStr, latStr, lonStr, depthStr, magStr, locStr)
+		if err != nil {
+			continue // Skip single bad event
+		}
+		events = append(events, sismo)
+	}
+
+	if len(events) == 0 {
+		return nil, fmt.Errorf("no events could be parsed from GeoJSON features")
+	}
+
+	return events, nil
 }

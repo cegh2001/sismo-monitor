@@ -80,3 +80,56 @@ func TestFunvisisHTMLParser(t *testing.T) {
 		t.Fatalf("Expected ParseHTMLFallback to return an error, but got nil")
 	}
 }
+
+func TestFunvisisJSONParser(t *testing.T) {
+	scraper := NewFunvisisScraper(nil, nil)
+
+	mockJSON := `
+	{
+		"type": "FeatureCollection",
+		"features": [
+			{
+				"type": "Feature",
+				"geometry": {
+					"type": "Point",
+					"coordinates": [-66.90, 10.65]
+				},
+				"properties": {
+					"phoneFormatted": "12.5 km",
+					"phone": "3.5",
+					"address": "10 km al norte de La Guaira",
+					"city": "16:20:45",
+					"country": "Venezuela",
+					"postalCode": "10-07-2026",
+					"state": "12.5 km",
+					"lat": "10.65",
+					"long": "-66.90"
+				}
+			}
+		]
+	}
+	`
+
+	events, err := scraper.ParseJSON(mockJSON)
+	if err != nil {
+		t.Fatalf("Failed to parse JSON: %v", err)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("Expected 1 event, got %d", len(events))
+	}
+
+	e := events[0]
+	if e.Magnitude != 3.5 {
+		t.Errorf("Expected Magnitude 3.5, got %.1f", e.Magnitude)
+	}
+	if e.Latitude != 10.65 || e.Longitude != -66.90 {
+		t.Errorf("Expected Lat/Lon (10.65, -66.90), got (%.2f, %.2f)", e.Latitude, e.Longitude)
+	}
+	if e.Depth != 12.5 {
+		t.Errorf("Expected Depth 12.5, got %.1f", e.Depth)
+	}
+	if e.Location != "10 km al norte de La Guaira" {
+		t.Errorf("Expected Location '10 km al norte de La Guaira', got %q", e.Location)
+	}
+}
