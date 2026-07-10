@@ -1,0 +1,20 @@
+# Binaries
+*_bin
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+# Dependency directories (only needed if you use local vendor)
+# vendor/
+
+# OS metadata files
+.DS_Store
+Thumbs.db
