@@ -34,24 +34,26 @@ type MsgStats struct {
 
 // Model represents the state of the TUI dashboard.
 type Model struct {
-	updateChan <-chan tea.Msg
-	Sismos     []alert.Sismo
-	Logs       []string
-	Stats      MsgStats
-	Port       string
-	statusMsg  string
-	logScroll  int
+	updateChan  <-chan tea.Msg
+	Sismos      []alert.Sismo
+	Logs        []string
+	Stats       MsgStats
+	Port        string
+	statusMsg   string
+	logScroll   int
+	sismoScroll int
 }
 
 // NewModel initializes the Bubbletea model.
 func NewModel(updateChan <-chan tea.Msg, port string) Model {
 	return Model{
-		updateChan: updateChan,
-		Sismos:     make([]alert.Sismo, 0),
-		Logs:       make([]string, 0),
-		Port:       port,
-		statusMsg:  "Ready",
-		logScroll:  0,
+		updateChan:  updateChan,
+		Sismos:      make([]alert.Sismo, 0),
+		Logs:        make([]string, 0),
+		Port:        port,
+		statusMsg:   "Ready",
+		logScroll:   0,
+		sismoScroll: 0,
 	}
 }
 
@@ -110,12 +112,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = fmt.Sprintf("Scrolled down logs (%d/%d)", m.logScroll, len(m.Logs)-10)
 			}
 			return m, nil
+		case "left":
+			if len(m.Sismos) > 10 {
+				m.sismoScroll++
+				if m.sismoScroll > len(m.Sismos)-10 {
+					m.sismoScroll = len(m.Sismos) - 10
+				}
+				m.statusMsg = fmt.Sprintf("Scrolled up sismos (%d/%d)", m.sismoScroll, len(m.Sismos)-10)
+			}
+			return m, nil
+		case "right":
+			m.sismoScroll--
+			if m.sismoScroll < 0 {
+				m.sismoScroll = 0
+			}
+			if m.sismoScroll == 0 {
+				m.statusMsg = "Ready (Live sismos)"
+			} else {
+				m.statusMsg = fmt.Sprintf("Scrolled down sismos (%d/%d)", m.sismoScroll, len(m.Sismos)-10)
+			}
+			return m, nil
 		}
 
 	case MsgSismo:
 		m.Sismos = append(m.Sismos, alert.Sismo(msg))
 		if len(m.Sismos) > 50 {
 			m.Sismos = m.Sismos[1:]
+		}
+		if m.sismoScroll > 0 {
+			m.sismoScroll++
+			if m.sismoScroll > len(m.Sismos)-10 {
+				m.sismoScroll = len(m.Sismos) - 10
+			}
 		}
 		return m, SubscribeToUpdates(m.updateChan)
 
@@ -182,16 +210,28 @@ func (m Model) View() string {
 		m.Stats.InfoCount, m.Stats.PreAlertCount, m.Stats.CriticalCount, m.Stats.SwarmCount)
 	s += fmt.Sprintf("  Swarms Detected: %-3d (Active local events in 6h window: %d)\n", m.Stats.SwarmCount, m.Stats.SwarmQueueLen)
 	s += "--------------------------------------------------------------------------------\n"
-	s += "  LATEST SEISMIC EVENTS:\n"
+	s += "  LATEST SEISMIC EVENTS (Use Left/Right Arrows to scroll):\n"
 	s += fmt.Sprintf("  %-10s  %-8s  %-6s  %-8s  %-8s  %-30s\n", "Source", "Time", "Mag", "Depth", "Distance", "Location")
 	if len(m.Sismos) == 0 {
 		s += "  (No seismic events processed yet)\n"
 	} else {
-		for i := len(m.Sismos) - 1; i >= 0; i-- {
+		totalSismos := len(m.Sismos)
+		start := totalSismos - 1 - m.sismoScroll
+		end := start - 10
+		if end < -1 {
+			end = -1
+		}
+		for i := start; i > end; i-- {
 			ev := m.Sismos[i]
 			tStr := ev.Time.Format("15:04:05")
 			s += fmt.Sprintf("  %-10s  %-8s  %-6.1f  %-8.1f  %-8.1f  %-30s\n",
 				ev.Source, tStr, ev.Magnitude, ev.Depth, ev.Distance, truncate(ev.Location, 30))
+		}
+		if m.sismoScroll > 0 {
+			s = strings.Replace(s, "  LATEST SEISMIC EVENTS", "  LATEST SEISMIC EVENTS [▲ More recent sismos above]", 1)
+		}
+		if start-10 >= 0 {
+			s = strings.Replace(s, "scroll):", "scroll) [▼ Older sismos below]:", 1)
 		}
 	}
 	s += "--------------------------------------------------------------------------------\n"
@@ -220,6 +260,7 @@ func (m Model) View() string {
 	}
 	s += "--------------------------------------------------------------------------------\n"
 	s += "  [q] Quit | [t] Trigger Critical Alert (6.5 Mw) | [s] Trigger Swarm Alert (>=5 events)\n"
+	s += "  [Arrows] Up/Down: Scroll Logs | Left/Right: Scroll Sismos\n"
 	s += "================================================================================\n"
 	return s
 }

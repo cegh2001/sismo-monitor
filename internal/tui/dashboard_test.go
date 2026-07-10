@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -42,6 +43,27 @@ func TestModelUpdate(t *testing.T) {
 		}
 		if cmd == nil {
 			t.Error("Expected cmd to trigger simulation, got nil")
+		}
+	})
+
+	t.Run("KeyMsg left/right updates sismoScroll statusMsg", func(t *testing.T) {
+		m := model
+		for i := 0; i < 15; i++ {
+			sismo := alert.Sismo{ID: fmt.Sprintf("s-%d", i), Magnitude: 2.0}
+			res, _ := m.Update(MsgSismo(sismo))
+			m = res.(Model)
+		}
+
+		res, _ := m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		m = res.(Model)
+		if m.sismoScroll != 1 {
+			t.Errorf("Expected sismoScroll to be 1, got %d", m.sismoScroll)
+		}
+
+		res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+		m = res.(Model)
+		if m.sismoScroll != 0 {
+			t.Errorf("Expected sismoScroll to be 0, got %d", m.sismoScroll)
 		}
 	})
 
