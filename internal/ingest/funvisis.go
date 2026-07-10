@@ -24,6 +24,7 @@ type FunvisisScraper struct {
 	client       *http.Client
 	logger       func(string, ...interface{})
 	errNotifier  func(error)
+	seenEvents   map[string]time.Time
 }
 
 // NewFunvisisScraper creates a new FunvisisScraper.
@@ -34,6 +35,7 @@ func NewFunvisisScraper(logger func(string, ...interface{}), errNotifier func(er
 		client:       &http.Client{Timeout: 15 * time.Second},
 		logger:       logger,
 		errNotifier:  errNotifier,
+		seenEvents:   make(map[string]time.Time),
 	}
 }
 
@@ -68,8 +70,28 @@ func (s *FunvisisScraper) scrapeAndDispatch(out chan<- alert.Sismo) {
 		return
 	}
 
-	s.log("Funvisis scraper found %d events.", len(events))
+	if s.seenEvents == nil {
+		s.seenEvents = make(map[string]time.Time)
+	}
+
+	// Clean up events older than 24 hours to prevent memory leaks
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for id, addedAt := range s.seenEvents {
+		if addedAt.Before(cutoff) {
+			delete(s.seenEvents, id)
+		}
+	}
+
+	var newEvents []alert.Sismo
 	for _, e := range events {
+		if _, seen := s.seenEvents[e.ID]; !seen {
+			s.seenEvents[e.ID] = time.Now()
+			newEvents = append(newEvents, e)
+		}
+	}
+
+	s.log("Funvisis scraper found %d events (%d new).", len(events), len(newEvents))
+	for _, e := range newEvents {
 		select {
 		case out <- e:
 		default:

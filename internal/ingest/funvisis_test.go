@@ -1,7 +1,11 @@
 package ingest
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"sismo-monitor/internal/alert"
 )
 
 func TestFunvisisHTMLParser(t *testing.T) {
@@ -131,5 +135,121 @@ func TestFunvisisJSONParser(t *testing.T) {
 	}
 	if e.Location != "10 km al norte de La Guaira" {
 		t.Errorf("Expected Location '10 km al norte de La Guaira', got %q", e.Location)
+	}
+}
+
+func TestFunvisisDeduplication(t *testing.T) {
+	mockJSON := `
+	{
+		"type": "FeatureCollection",
+		"features": [
+			{
+				"type": "Feature",
+				"geometry": {
+					"type": "Point",
+					"coordinates": [-66.90, 10.65]
+				},
+				"properties": {
+					"phoneFormatted": "12.5 km",
+					"phone": "3.5",
+					"address": "10 km al norte de La Guaira",
+					"city": "16:20:45",
+					"country": "Venezuela",
+					"postalCode": "10-07-2026",
+					"state": "12.5 km",
+					"lat": "10.65",
+					"long": "-66.90"
+				}
+			}
+		]
+	}
+	`
+
+	// Setup mock server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(mockJSON))
+	}))
+	defer server.Close()
+
+	scraper := NewFunvisisScraper(nil, nil)
+	scraper.url = server.URL
+
+	out := make(chan alert.Sismo, 10)
+
+	// First scrape should dispatch the event
+	scraper.scrapeAndDispatch(out)
+	if len(out) != 1 {
+		t.Fatalf("Expected 1 event on first scrape, got %d", len(out))
+	}
+	ev1 := <-out
+
+	// Second scrape should NOT dispatch any event (since it's a duplicate)
+	scraper.scrapeAndDispatch(out)
+	if len(out) != 0 {
+		t.Fatalf("Expected 0 events on second scrape (deduplicated), got %d", len(out))
+	}
+
+	// Now modify the server response to have a new event
+	mockJSON2 := `
+	{
+		"type": "FeatureCollection",
+		"features": [
+			{
+				"type": "Feature",
+				"geometry": {
+					"type": "Point",
+					"coordinates": [-66.90, 10.65]
+				},
+				"properties": {
+					"phoneFormatted": "12.5 km",
+					"phone": "3.5",
+					"address": "10 km al norte de La Guaira",
+					"city": "16:20:45",
+					"country": "Venezuela",
+					"postalCode": "10-07-2026",
+					"state": "12.5 km",
+					"lat": "10.65",
+					"long": "-66.90"
+				}
+			},
+			{
+				"type": "Feature",
+				"geometry": {
+					"type": "Point",
+					"coordinates": [-66.95, 10.50]
+				},
+				"properties": {
+					"phoneFormatted": "5.0 km",
+					"phone": "2.8",
+					"address": "Caracas Valley",
+					"city": "15:10:00",
+					"country": "Venezuela",
+					"postalCode": "10-07-2026",
+					"state": "5.0 km",
+					"lat": "10.50",
+					"long": "-66.95"
+				}
+			}
+		]
+	}
+	`
+
+	// Update server response
+	server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(mockJSON2))
+	})
+
+	// Third scrape should only dispatch the new event
+	scraper.scrapeAndDispatch(out)
+	if len(out) != 1 {
+		t.Fatalf("Expected 1 new event on third scrape, got %d", len(out))
+	}
+	ev2 := <-out
+	if ev2.ID == ev1.ID {
+		t.Errorf("Expected different event ID for the new event, but got same: %s", ev2.ID)
 	}
 }
