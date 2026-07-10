@@ -253,3 +253,81 @@ func TestFunvisisDeduplication(t *testing.T) {
 		t.Errorf("Expected different event ID for the new event, but got same: %s", ev2.ID)
 	}
 }
+
+func TestFunvisisSorting(t *testing.T) {
+	// mockJSON contains 3 events: newest first (18:00:00), then middle (15:00:00), then oldest (12:00:00)
+	mockJSON := `
+	{
+		"type": "FeatureCollection",
+		"features": [
+			{
+				"type": "Feature",
+				"geometry": {"type": "Point", "coordinates": [-66.90, 10.65]},
+				"properties": {
+					"phone": "3.0",
+					"address": "Newest Event",
+					"city": "18:00:00",
+					"postalCode": "10-07-2026",
+					"lat": "10.65",
+					"long": "-66.90"
+				}
+			},
+			{
+				"type": "Feature",
+				"geometry": {"type": "Point", "coordinates": [-66.90, 10.65]},
+				"properties": {
+					"phone": "2.0",
+					"address": "Middle Event",
+					"city": "15:00:00",
+					"postalCode": "10-07-2026",
+					"lat": "10.65",
+					"long": "-66.90"
+				}
+			},
+			{
+				"type": "Feature",
+				"geometry": {"type": "Point", "coordinates": [-66.90, 10.65]},
+				"properties": {
+					"phone": "1.0",
+					"address": "Oldest Event",
+					"city": "12:00:00",
+					"postalCode": "10-07-2026",
+					"lat": "10.65",
+					"long": "-66.90"
+				}
+			}
+		]
+	}
+	`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(mockJSON))
+	}))
+	defer server.Close()
+
+	scraper := NewFunvisisScraper(nil, nil)
+	scraper.url = server.URL
+
+	out := make(chan alert.Sismo, 10)
+
+	scraper.scrapeAndDispatch(out)
+	if len(out) != 3 {
+		t.Fatalf("Expected 3 events dispatched, got %d", len(out))
+	}
+
+	ev1 := <-out // Should be oldest (12:00:00)
+	ev2 := <-out // Should be middle (15:00:00)
+	ev3 := <-out // Should be newest (18:00:00)
+
+	if ev1.Location != "Oldest Event" {
+		t.Errorf("Expected first dispatched event to be 'Oldest Event', got %q", ev1.Location)
+	}
+	if ev2.Location != "Middle Event" {
+		t.Errorf("Expected second dispatched event to be 'Middle Event', got %q", ev2.Location)
+	}
+	if ev3.Location != "Newest Event" {
+		t.Errorf("Expected third dispatched event to be 'Newest Event', got %q", ev3.Location)
+	}
+}

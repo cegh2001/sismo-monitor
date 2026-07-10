@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"sismo-monitor/internal/alert"
@@ -112,6 +113,38 @@ func TestModelUpdate(t *testing.T) {
 		}
 		if cmd == nil {
 			t.Error("Expected non-nil cmd")
+		}
+	})
+
+	t.Run("MsgSismo sorts Sismos slice chronologically", func(t *testing.T) {
+		m := model
+		now := time.Now()
+
+		s1 := alert.Sismo{ID: "s1", Time: now.Add(-10 * time.Minute)}
+		s2 := alert.Sismo{ID: "s2", Time: now}
+		s3 := alert.Sismo{ID: "s3", Time: now.Add(-5 * time.Minute)}
+
+		// Inject in out-of-order sequence (s2, s1, s3)
+		res, _ := m.Update(MsgSismo(s2))
+		m = res.(Model)
+		res, _ = m.Update(MsgSismo(s1))
+		m = res.(Model)
+		res, _ = m.Update(MsgSismo(s3))
+		m = res.(Model)
+
+		if len(m.Sismos) != 3 {
+			t.Fatalf("Expected 3 sismos, got %d", len(m.Sismos))
+		}
+
+		// Should be sorted: s1 (oldest), s3 (middle), s2 (newest)
+		if m.Sismos[0].ID != "s1" {
+			t.Errorf("Expected first sismo to be s1 (oldest), got %s", m.Sismos[0].ID)
+		}
+		if m.Sismos[1].ID != "s3" {
+			t.Errorf("Expected second sismo to be s3, got %s", m.Sismos[1].ID)
+		}
+		if m.Sismos[2].ID != "s2" {
+			t.Errorf("Expected third sismo to be s2 (newest), got %s", m.Sismos[2].ID)
 		}
 	})
 }

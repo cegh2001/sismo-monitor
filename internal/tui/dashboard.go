@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -136,6 +137,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case MsgSismo:
 		m.Sismos = append(m.Sismos, alert.Sismo(msg))
+		sort.Slice(m.Sismos, func(i, j int) bool {
+			return m.Sismos[i].Time.Before(m.Sismos[j].Time)
+		})
 		if len(m.Sismos) > 50 {
 			m.Sismos = m.Sismos[1:]
 		}

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -89,6 +90,12 @@ func (s *FunvisisScraper) scrapeAndDispatch(out chan<- alert.Sismo) {
 			newEvents = append(newEvents, e)
 		}
 	}
+
+	// Sort new events chronologically (oldest first) so they are processed/appended
+	// in chronological order, putting the newest event at the end of the TUI slice.
+	sort.Slice(newEvents, func(i, j int) bool {
+		return newEvents[i].Time.Before(newEvents[j].Time)
+	})
 
 	s.log("Funvisis scraper found %d events (%d new).", len(events), len(newEvents))
 	for _, e := range newEvents {
