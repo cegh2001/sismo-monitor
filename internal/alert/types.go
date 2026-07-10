@@ -15,16 +15,18 @@ type Sismo struct {
 	Location  string    `json:"location"`
 	Time      time.Time `json:"time"`
 	Distance  float64   `json:"distance"` // Distance to La Guaira in km
+	GridCell  string    `json:"grid_cell"`
 }
 
 // AlertLevel represents the danger classification of a seismic alert.
 type AlertLevel string
 
 const (
-	LevelInfo     AlertLevel = "INFO"
-	LevelPreAlert AlertLevel = "PRE_ALERT"
-	LevelCritical AlertLevel = "CRITICAL"
-	LevelSwarm    AlertLevel = "SWARM"
+	LevelInfo        AlertLevel = "INFO"
+	LevelPreAlert    AlertLevel = "PRE_ALERT"
+	LevelCritical    AlertLevel = "CRITICAL"
+	LevelSwarm       AlertLevel = "SWARM"
+	LevelInstability AlertLevel = "INSTABILITY"
 )
 
 // Alert wraps a seismic event with its evaluated threat level.
@@ -32,3 +34,4 @@ type Alert struct {
 	Sismo Sismo      `json:"sismo"`
 	Level AlertLevel `json:"level"`
 }
+

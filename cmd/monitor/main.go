@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"sismo-monitor/internal/alert"
@@ -45,6 +47,35 @@ func main() {
 	// Start rate-limited notification loop
 	go notifier.Start(ctx)
 
+	// Initialize Gap Analyzer
+	gapAnalyzer := alert.NewGapAnalyzer("data/sismos_historicos.json")
+	if err := gapAnalyzer.Load(); err != nil {
+		tuiLog("Failed to load historical gaps database: %v", err)
+	}
+
+	// Seed historical database if empty
+	histWorker := ingest.NewUSGSHistoricalWorker(cfg.USGSHistoricalURL, tuiLog)
+	dbFile := "data/sismos_historicos.json"
+	needsSeed := false
+	if fi, err := os.Stat(dbFile); os.IsNotExist(err) || fi.Size() <= 4 {
+		needsSeed = true
+	}
+	if needsSeed {
+		tuiLog("Historical database empty, seeding from USGS...")
+		twoYearsAgo := time.Now().AddDate(-2, 0, 0)
+		histSismos, err := histWorker.Fetch(ctx, twoYearsAgo)
+		if err != nil {
+			tuiLog("Error fetching historical data: %v", err)
+		} else {
+			gapAnalyzer.SetSismos(histSismos)
+			if err := gapAnalyzer.Save(); err != nil {
+				tuiLog("Failed to save historical data: %v", err)
+			} else {
+				tuiLog("Successfully seeded %d historical events.", len(histSismos))
+			}
+		}
+	}
+
 	// Start EMSC WebSocket consumer client
 	emscClient := ingest.NewEMSCClient(tuiLog)
 	go emscClient.Start(ctx, eventChan)
@@ -55,6 +86,12 @@ func main() {
 	}
 	funvisisScraper := ingest.NewFunvisisScraper(tuiLog, funvisisErrHandler)
 	go funvisisScraper.Start(ctx, eventChan)
+
+	// Start USGS real-time client
+	usgsClient := ingest.NewUSGSClient(cfg.USGSRealtimeURL, tuiLog, func(err error) {
+		tuiLog("USGS client warning: %v", err)
+	})
+	go usgsClient.Start(ctx, eventChan)
 
 	// Start HTTP API Simulation server
 	simServer := api.NewSimulationServer(cfg.Port, eventChan, tuiLog)
@@ -80,6 +117,12 @@ func main() {
 				// 2. Check swarm condition
 				isSwarm := swarmQueue.AddAndCheck(s)
 
+				// 2.b Check seismic gap/instability condition
+				isInstability, err := gapAnalyzer.Add(s)
+				if err != nil {
+					tuiLog("Error adding to gap analyzer: %v", err)
+				}
+
 				// 3. Update stats counter
 				stats.TotalEvents++
 				if s.Distance <= 300.0 {
@@ -90,6 +133,8 @@ func main() {
 					stats.EmscEvents++
 				case "Funvisis":
 					stats.FunvisisCount++
+				case "USGS":
+					stats.USGSEvents++
 				case "Simulation":
 					stats.SimEvents++
 				}
@@ -101,7 +146,14 @@ func main() {
 				case alert.LevelCritical:
 					stats.CriticalCount++
 				}
+				if isInstability {
+					stats.InstabilityCount++
+					level = alert.LevelInstability
+				}
+
 				stats.SwarmQueueLen = len(swarmQueue.GetEvents())
+				stats.USGSPolls = usgsClient.GetStatsCount()
+				stats.ActiveGaps = len(gapAnalyzer.GetActiveLockSegments(time.Now()))
 
 				// 4. Update TUI events list
 				select {
@@ -109,9 +161,9 @@ func main() {
 				default:
 				}
 
-				// 5. Trigger notifications for Critical and Pre-Alert events
-				if level == alert.LevelCritical || level == alert.LevelPreAlert {
-					tuiLog("CRITICAL/PRE-ALERT detected: Dispatching notification for %s...", s.Location)
+				// 5. Trigger notifications for Critical, Pre-Alert, and Instability events
+				if level == alert.LevelCritical || level == alert.LevelPreAlert || level == alert.LevelInstability {
+					tuiLog("%s detected: Dispatching notification for %s...", level, s.Location)
 					_ = notifier.Notify(ctx, alert.Alert{Sismo: s, Level: level})
 				}
 

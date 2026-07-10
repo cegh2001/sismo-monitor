@@ -21,16 +21,20 @@ type MsgLog string
 
 // MsgStats is sent to update the dashboard statistic panels.
 type MsgStats struct {
-	TotalEvents   int
-	LocalEvents   int
-	EmscEvents    int
-	FunvisisCount int
-	SimEvents     int
-	InfoCount     int
-	PreAlertCount int
-	CriticalCount int
-	SwarmCount    int
-	SwarmQueueLen int
+	TotalEvents      int
+	LocalEvents      int
+	EmscEvents       int
+	FunvisisCount    int
+	USGSEvents       int
+	SimEvents        int
+	InfoCount        int
+	PreAlertCount    int
+	CriticalCount    int
+	SwarmCount       int
+	SwarmQueueLen    int
+	USGSPolls        int
+	ActiveGaps       int
+	InstabilityCount int
 }
 
 // Model represents the state of the TUI dashboard.
@@ -92,6 +96,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				triggerSimulation(m.Port, 3.1, 10.61, -66.91, "Swarmland (Sim C)"),
 				triggerSimulation(m.Port, 3.3, 10.60, -66.90, "Swarmland (Sim D)"),
 				triggerSimulation(m.Port, 3.0, 10.57, -66.94, "Swarmland (Sim E)"),
+			)
+		case "i":
+			m.statusMsg = "Triggering instability test alerts (3 events in G_0_0)..."
+			return m, tea.Batch(
+				triggerSimulationWithCell(m.Port, 2.5, 10.60, -66.93, "La Guaira Port (Instability A)", "G_0_0"),
+				triggerSimulationWithCell(m.Port, 2.6, 10.60, -66.93, "La Guaira Port (Instability B)", "G_0_0"),
+				triggerSimulationWithCell(m.Port, 2.7, 10.60, -66.93, "La Guaira Port (Instability C)", "G_0_0"),
 			)
 		case "up":
 			if len(m.Logs) > 10 {
@@ -198,21 +209,46 @@ func triggerSimulation(port string, mag, lat, lon float64, loc string) tea.Cmd {
 	}
 }
 
+func triggerSimulationWithCell(port string, mag, lat, lon float64, loc string, gridCell string) tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("http://localhost:%s/test-alert", port)
+		payload := map[string]interface{}{
+			"magnitude": mag,
+			"latitude":  lat,
+			"longitude": lon,
+			"depth":     10.0,
+			"location":  loc,
+			"grid_cell": gridCell,
+		}
+		body, _ := json.Marshal(payload)
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(body))
+		if err != nil {
+			return MsgLog(fmt.Sprintf("TUI: Simulation trigger failed: %v", err))
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return MsgLog(fmt.Sprintf("TUI: Simulation trigger status: %d", resp.StatusCode))
+		}
+		return MsgLog(fmt.Sprintf("TUI: Sim event with cell %s dispatched: Mag %.1f Mw", gridCell, mag))
+	}
+}
+
 // View outputs the textual representation of the dashboard.
 func (m Model) View() string {
 	var s string
 	s += "================================================================================\n"
 	s += "                    VENEZUELAN SEISMIC MONITOR & ALERT SYSTEM\n"
 	s += "================================================================================\n"
-	s += fmt.Sprintf("  STATUS: Active | EMSC WS: Connected | Funvisis Scraper: Polling | API: 127.0.0.1:%s\n", m.Port)
+	s += fmt.Sprintf("  STATUS: Active | EMSC: Connected | Funvisis: Polling | USGS: Polling | API: 127.0.0.1:%s\n", m.Port)
 	s += fmt.Sprintf("  ACTION: %s\n", m.statusMsg)
 	s += "--------------------------------------------------------------------------------\n"
 	s += "  STATISTICS:\n"
-	s += fmt.Sprintf("  Total Events: %-3d | Local (<300km): %-3d | EMSC: %-3d | Funvisis: %-3d | Sim: %-3d\n",
-		m.Stats.TotalEvents, m.Stats.LocalEvents, m.Stats.EmscEvents, m.Stats.FunvisisCount, m.Stats.SimEvents)
-	s += fmt.Sprintf("  Threat Levels: Info: %-3d | Pre-Alert: %-3d | Critical: %-3d | Swarm: %-3d\n",
-		m.Stats.InfoCount, m.Stats.PreAlertCount, m.Stats.CriticalCount, m.Stats.SwarmCount)
-	s += fmt.Sprintf("  Swarms Detected: %-3d (Active local events in 6h window: %d)\n", m.Stats.SwarmCount, m.Stats.SwarmQueueLen)
+	s += fmt.Sprintf("  Total Events: %-3d | Local (<300km): %-3d | EMSC: %-3d | Funvisis: %-3d | USGS: %-3d | Sim: %-3d\n",
+		m.Stats.TotalEvents, m.Stats.LocalEvents, m.Stats.EmscEvents, m.Stats.FunvisisCount, m.Stats.USGSEvents, m.Stats.SimEvents)
+	s += fmt.Sprintf("  Threat Levels: Info: %-3d | Pre-Alert: %-3d | Critical: %-3d | Swarm: %-3d | Instability: %-3d\n",
+		m.Stats.InfoCount, m.Stats.PreAlertCount, m.Stats.CriticalCount, m.Stats.SwarmCount, m.Stats.InstabilityCount)
+	s += fmt.Sprintf("  USGS Polls: %-3d | Active Gaps (Lock Segments): %-3d | Swarm Queue: %-3d\n",
+		m.Stats.USGSPolls, m.Stats.ActiveGaps, m.Stats.SwarmQueueLen)
 	s += "--------------------------------------------------------------------------------\n"
 	s += "  LATEST SEISMIC EVENTS (Use Left/Right Arrows to scroll):\n"
 	s += fmt.Sprintf("  %-10s  %-8s  %-6s  %-8s  %-8s  %-30s\n", "Source", "Time", "Mag", "Depth", "Distance", "Location")
@@ -263,7 +299,7 @@ func (m Model) View() string {
 		}
 	}
 	s += "--------------------------------------------------------------------------------\n"
-	s += "  [q] Quit | [t] Trigger Critical Alert (6.5 Mw) | [s] Trigger Swarm Alert (>=5 events)\n"
+	s += "  [q] Quit | [t] Trigger Critical | [s] Trigger Swarm | [i] Trigger Instability\n"
 	s += "  [Arrows] Up/Down: Scroll Logs | Left/Right: Scroll Sismos\n"
 	s += "================================================================================\n"
 	return s

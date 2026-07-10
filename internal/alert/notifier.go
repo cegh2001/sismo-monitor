@@ -100,15 +100,30 @@ func (n *PushoverNotifier) send(alert Alert) error {
 	}
 
 	apiURL := n.apiURL
-	title := fmt.Sprintf("Seismic Alert Venezuelan Region: %s", alert.Level)
-	message := fmt.Sprintf("Level: %s\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s",
-		alert.Level,
-		alert.Sismo.Magnitude,
-		alert.Sismo.Depth,
-		alert.Sismo.Distance,
-		alert.Sismo.Location,
-		alert.Sismo.Time.Format("2006-01-02 15:04:05"),
-	)
+	var title string
+	var message string
+
+	if alert.Level == LevelInstability {
+		title = "Alerta Especial: Inestabilidad Cortical"
+		message = fmt.Sprintf("Alerta Especial: Actividad sísmica detectada en segmento previamente bloqueado. Posible deslizamiento acelerado en desarrollo (Falla de San Sebastián/Boconó, cuadrante %s).\n\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s",
+			alert.Sismo.GridCell,
+			alert.Sismo.Magnitude,
+			alert.Sismo.Depth,
+			alert.Sismo.Distance,
+			alert.Sismo.Location,
+			alert.Sismo.Time.Format("2006-01-02 15:04:05"),
+		)
+	} else {
+		title = fmt.Sprintf("Seismic Alert Venezuelan Region: %s", alert.Level)
+		message = fmt.Sprintf("Level: %s\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s",
+			alert.Level,
+			alert.Sismo.Magnitude,
+			alert.Sismo.Depth,
+			alert.Sismo.Distance,
+			alert.Sismo.Location,
+			alert.Sismo.Time.Format("2006-01-02 15:04:05"),
+		)
+	}
 
 	data := url.Values{}
 	data.Set("token", n.appToken)
@@ -117,7 +132,11 @@ func (n *PushoverNotifier) send(alert Alert) error {
 	data.Set("message", message)
 
 	priority := "0"
-	if alert.Level == LevelCritical {
+	if alert.Level == LevelInstability {
+		priority = "2"
+		data.Set("retry", "30")
+		data.Set("expire", "3600")
+	} else if alert.Level == LevelCritical {
 		priority = "1"
 	} else if alert.Level == LevelPreAlert || alert.Level == LevelSwarm {
 		priority = "0"

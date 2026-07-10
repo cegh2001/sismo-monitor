@@ -36,6 +36,7 @@ type TestAlertPayload struct {
 	Longitude float64 `json:"longitude"`
 	Depth     float64 `json:"depth"`
 	Location  string  `json:"location"`
+	GridCell  string  `json:"grid_cell"`
 }
 
 // Start starts the HTTP server. It listens for requests and shuts down gracefully when the context is cancelled.
@@ -92,6 +93,11 @@ func (s *SimulationServer) handleTestAlert(w http.ResponseWriter, r *http.Reques
 		loc = "Simulation Center (Test)"
 	}
 
+	gridCell := p.GridCell
+	if gridCell == "" {
+		gridCell = geo.GetGridCell(p.Latitude, p.Longitude)
+	}
+
 	sismo := alert.Sismo{
 		ID:        eventID,
 		Source:    "Simulation",
@@ -102,6 +108,7 @@ func (s *SimulationServer) handleTestAlert(w http.ResponseWriter, r *http.Reques
 		Location:  loc,
 		Time:      now,
 		Distance:  dist,
+		GridCell:  gridCell,
 	}
 
 	select {
