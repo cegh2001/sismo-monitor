@@ -60,7 +60,15 @@ func (g *GapAnalyzer) saveLocked() error {
 		return fmt.Errorf("create dir failed: %w", err)
 	}
 
-	data, err := json.MarshalIndent(g.sismos, "", "  ")
+	// Filter out simulation events to keep the database pure
+	var realSismos []Sismo
+	for _, s := range g.sismos {
+		if s.Source != "Simulation" {
+			realSismos = append(realSismos, s)
+		}
+	}
+
+	data, err := json.MarshalIndent(realSismos, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal db failed: %w", err)
 	}
