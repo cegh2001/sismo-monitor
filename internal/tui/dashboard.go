@@ -10,7 +10,17 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"sismo-monitor/internal/alert"
+)
+
+var (
+	magLowStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#43BF6D")).Width(6).Align(lipgloss.Left)
+	magMidStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF8700")).Bold(true).Width(6).Align(lipgloss.Left)
+	magHighStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF3B30")).Bold(true).Width(6).Align(lipgloss.Left)
+
+	doubleDivider = strings.Repeat("=", 97) + "\n"
+	singleDivider = strings.Repeat("-", 97) + "\n"
 )
 
 // MsgSismo is sent when a new seismic event is processed.
@@ -236,12 +246,12 @@ func triggerSimulationWithCell(port string, mag, lat, lon float64, loc string, g
 // View outputs the textual representation of the dashboard.
 func (m Model) View() string {
 	var s string
-	s += "================================================================================\n"
-	s += "                    VENEZUELAN SEISMIC MONITOR & ALERT SYSTEM\n"
-	s += "================================================================================\n"
+	s += doubleDivider
+	s += "                            VENEZUELAN SEISMIC MONITOR & ALERT SYSTEM\n"
+	s += doubleDivider
 	s += fmt.Sprintf("  STATUS: Active | EMSC: Connected | Funvisis: Polling | USGS: Polling | API: 127.0.0.1:%s\n", m.Port)
 	s += fmt.Sprintf("  ACTION: %s\n", m.statusMsg)
-	s += "--------------------------------------------------------------------------------\n"
+	s += singleDivider
 	s += "  STATISTICS:\n"
 	s += fmt.Sprintf("  Total Events: %-3d | Local (<300km): %-3d | EMSC: %-3d | Funvisis: %-3d | USGS: %-3d | Sim: %-3d\n",
 		m.Stats.TotalEvents, m.Stats.LocalEvents, m.Stats.EmscEvents, m.Stats.FunvisisCount, m.Stats.USGSEvents, m.Stats.SimEvents)
@@ -249,9 +259,9 @@ func (m Model) View() string {
 		m.Stats.InfoCount, m.Stats.PreAlertCount, m.Stats.CriticalCount, m.Stats.SwarmCount, m.Stats.InstabilityCount)
 	s += fmt.Sprintf("  USGS Polls: %-3d | Active Gaps (Lock Segments): %-3d | Swarm Queue: %-3d\n",
 		m.Stats.USGSPolls, m.Stats.ActiveGaps, m.Stats.SwarmQueueLen)
-	s += "--------------------------------------------------------------------------------\n"
+	s += singleDivider
 	s += "  LATEST SEISMIC EVENTS (Use Left/Right Arrows to scroll):\n"
-	s += fmt.Sprintf("  %-10s  %-8s  %-6s  %-8s  %-8s  %-30s\n", "Source", "Time", "Mag", "Depth", "Distance", "Location")
+	s += fmt.Sprintf("  %-10s  %-8s  %-6s  %-8s  %-8s  %-45s\n", "Source", "Time", "Mag", "Depth", "Distance", "Location")
 	if len(m.Sismos) == 0 {
 		s += "  (No seismic events processed yet)\n"
 	} else {
@@ -264,8 +274,19 @@ func (m Model) View() string {
 		for i := start; i > end; i-- {
 			ev := m.Sismos[i]
 			tStr := ev.Time.Local().Format("15:04:05")
-			s += fmt.Sprintf("  %-10s  %-8s  %-6.1f  %-8.1f  %-8.1f  %-30s\n",
-				ev.Source, tStr, ev.Magnitude, ev.Depth, ev.Distance, truncate(ev.Location, 30))
+
+			magStr := fmt.Sprintf("%.1f", ev.Magnitude)
+			var styledMag string
+			if ev.Magnitude < 3.5 {
+				styledMag = magLowStyle.Render(magStr)
+			} else if ev.Magnitude < 5.0 {
+				styledMag = magMidStyle.Render(magStr)
+			} else {
+				styledMag = magHighStyle.Render(magStr)
+			}
+
+			s += fmt.Sprintf("  %-10s  %-8s  %s  %-8.1f  %-8.1f  %-45s\n",
+				ev.Source, tStr, styledMag, ev.Depth, ev.Distance, truncate(ev.Location, 45))
 		}
 		if m.sismoScroll > 0 {
 			s = strings.Replace(s, "  LATEST SEISMIC EVENTS", "  LATEST SEISMIC EVENTS [▲ More recent sismos above]", 1)
@@ -274,7 +295,7 @@ func (m Model) View() string {
 			s = strings.Replace(s, "scroll):", "scroll) [▼ Older sismos below]:", 1)
 		}
 	}
-	s += "--------------------------------------------------------------------------------\n"
+	s += singleDivider
 	s += "  LATEST SYSTEM LOGS (Use Up/Down Arrows to scroll):\n"
 	if len(m.Logs) == 0 {
 		s += "  (No logs recorded yet)\n"
@@ -298,16 +319,17 @@ func (m Model) View() string {
 			s = strings.Replace(s, "scroll):", "scroll) [▼ More logs below]:", 1)
 		}
 	}
-	s += "--------------------------------------------------------------------------------\n"
+	s += singleDivider
 	s += "  [q] Quit | [t] Trigger Critical | [s] Trigger Swarm | [i] Trigger Instability\n"
 	s += "  [Arrows] Up/Down: Scroll Logs | Left/Right: Scroll Sismos\n"
-	s += "================================================================================\n"
+	s += doubleDivider
 	return s
 }
 
 func truncate(str string, length int) string {
-	if len(str) > length {
-		return str[:length-3] + "..."
+	runes := []rune(str)
+	if len(runes) > length {
+		return string(runes[:length-3]) + "..."
 	}
 	return str
 }
