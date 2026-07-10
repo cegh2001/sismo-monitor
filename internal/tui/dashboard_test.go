@@ -37,8 +37,8 @@ func TestModelUpdate(t *testing.T) {
 	t.Run("KeyMsg s triggers swarm simulation and updates statusMsg", func(t *testing.T) {
 		m, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
 		newModel := m.(Model)
-		if newModel.statusMsg != "Triggering swarm test alerts..." {
-			t.Errorf("Expected statusMsg 'Triggering swarm test alerts...', got %q", newModel.statusMsg)
+		if newModel.statusMsg != "Triggering swarm test alerts (5 events)..." {
+			t.Errorf("Expected statusMsg 'Triggering swarm test alerts (5 events)...', got %q", newModel.statusMsg)
 		}
 		if cmd == nil {
 			t.Error("Expected cmd to trigger simulation, got nil")

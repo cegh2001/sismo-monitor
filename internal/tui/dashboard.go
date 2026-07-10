@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,6 +40,7 @@ type Model struct {
 	Stats      MsgStats
 	Port       string
 	statusMsg  string
+	logScroll  int
 }
 
 // NewModel initializes the Bubbletea model.
@@ -49,6 +51,7 @@ func NewModel(updateChan <-chan tea.Msg, port string) Model {
 		Logs:       make([]string, 0),
 		Port:       port,
 		statusMsg:  "Ready",
+		logScroll:  0,
 	}
 }
 
@@ -79,17 +82,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Triggering critical test alert..."
 			return m, triggerSimulation(m.Port, 6.5, 10.60, -66.93, "La Guaira Port (Simulation)")
 		case "s":
-			m.statusMsg = "Triggering swarm test alerts..."
+			m.statusMsg = "Triggering swarm test alerts (5 events)..."
 			return m, tea.Batch(
 				triggerSimulation(m.Port, 3.2, 10.58, -66.95, "Swarmland (Sim A)"),
 				triggerSimulation(m.Port, 3.4, 10.59, -66.92, "Swarmland (Sim B)"),
 				triggerSimulation(m.Port, 3.1, 10.61, -66.91, "Swarmland (Sim C)"),
+				triggerSimulation(m.Port, 3.3, 10.60, -66.90, "Swarmland (Sim D)"),
+				triggerSimulation(m.Port, 3.0, 10.57, -66.94, "Swarmland (Sim E)"),
 			)
+		case "up":
+			if len(m.Logs) > 10 {
+				m.logScroll++
+				if m.logScroll > len(m.Logs)-10 {
+					m.logScroll = len(m.Logs) - 10
+				}
+				m.statusMsg = fmt.Sprintf("Scrolled up logs (%d/%d)", m.logScroll, len(m.Logs)-10)
+			}
+			return m, nil
+		case "down":
+			m.logScroll--
+			if m.logScroll < 0 {
+				m.logScroll = 0
+			}
+			if m.logScroll == 0 {
+				m.statusMsg = "Ready (Live logs)"
+			} else {
+				m.statusMsg = fmt.Sprintf("Scrolled down logs (%d/%d)", m.logScroll, len(m.Logs)-10)
+			}
+			return m, nil
 		}
 
 	case MsgSismo:
 		m.Sismos = append(m.Sismos, alert.Sismo(msg))
-		if len(m.Sismos) > 10 {
+		if len(m.Sismos) > 50 {
 			m.Sismos = m.Sismos[1:]
 		}
 		return m, SubscribeToUpdates(m.updateChan)
@@ -98,8 +123,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Format log with timestamp
 		logLine := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), string(msg))
 		m.Logs = append(m.Logs, logLine)
-		if len(m.Logs) > 10 {
+		if len(m.Logs) > 100 {
 			m.Logs = m.Logs[1:]
+		}
+		if m.logScroll > 0 {
+			m.logScroll++
+			if m.logScroll > len(m.Logs)-10 {
+				m.logScroll = len(m.Logs) - 10
+			}
 		}
 		return m, SubscribeToUpdates(m.updateChan)
 
@@ -164,16 +195,31 @@ func (m Model) View() string {
 		}
 	}
 	s += "--------------------------------------------------------------------------------\n"
-	s += "  LATEST SYSTEM LOGS:\n"
+	s += "  LATEST SYSTEM LOGS (Use Up/Down Arrows to scroll):\n"
 	if len(m.Logs) == 0 {
 		s += "  (No logs recorded yet)\n"
 	} else {
-		for i := len(m.Logs) - 1; i >= 0; i-- {
+		totalLogs := len(m.Logs)
+		start := totalLogs - 10 - m.logScroll
+		if start < 0 {
+			start = 0
+		}
+		end := start + 10
+		if end > totalLogs {
+			end = totalLogs
+		}
+		for i := start; i < end; i++ {
 			s += fmt.Sprintf("  * %s\n", m.Logs[i])
+		}
+		if start > 0 {
+			s = strings.Replace(s, "  LATEST SYSTEM LOGS", "  LATEST SYSTEM LOGS [▲ More logs above]", 1)
+		}
+		if end < totalLogs {
+			s = strings.Replace(s, "scroll):", "scroll) [▼ More logs below]:", 1)
 		}
 	}
 	s += "--------------------------------------------------------------------------------\n"
-	s += "  [q] Quit | [t] Trigger Critical Alert (6.5 Mw) | [s] Trigger Swarm Alert (>=3 events)\n"
+	s += "  [q] Quit | [t] Trigger Critical Alert (6.5 Mw) | [s] Trigger Swarm Alert (>=5 events)\n"
 	s += "================================================================================\n"
 	return s
 }
