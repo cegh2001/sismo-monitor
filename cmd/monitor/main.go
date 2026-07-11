@@ -103,6 +103,12 @@ func main() {
 	})
 	go rsbrClient.Start(ctx, eventChan)
 
+	// Start GEOFON (GFZ Potsdam) FDSN client — global, near-real-time
+	geofonClient := ingest.NewFDSNClient("GEOFON (GFZ)", "https://geofon.gfz-potsdam.de/fdsnws/event/1/query", 60*time.Second, tuiLog, func(err error) {
+		tuiLog("GEOFON client warning: %v", err)
+	})
+	go geofonClient.Start(ctx, eventChan)
+
 	// Start HTTP API Simulation server
 	simServer := api.NewSimulationServer(cfg.Port, eventChan, tuiLog)
 	go func() {

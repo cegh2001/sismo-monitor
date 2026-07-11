@@ -243,7 +243,7 @@ func (c *FDSNClient) log(format string, args ...interface{}) {
 
 // QuakeML and related structs for XML parsing.
 type QuakeML struct {
-	XMLName         xml.Name        `xml:"quakemodel"`
+	XMLName         xml.Name        `xml:"quakeml"`
 	EventParameters EventParameters `xml:"eventParameters"`
 }
 

@@ -9,7 +9,7 @@ import (
 )
 
 const testQuakeML = `<?xml version="1.0" encoding="utf-8"?>
-<q:quakemodel xmlns:q="http://quakeml.org/xmlns/quakeml/1.2" xmlns="http://quakeml.org/xmlns/bed/1.2">
+<q:quakeml xmlns:q="http://quakeml.org/xmlns/quakeml/1.2" xmlns="http://quakeml.org/xmlns/bed/1.2">
   <eventParameters publicID="smi:local/eventParameters">
     <!-- Event 1: Inside Venezuelan box, standard format -->
     <event publicID="smi:sismo.sgc.gov.co/event/sgc2026abc">
@@ -63,7 +63,7 @@ const testQuakeML = `<?xml version="1.0" encoding="utf-8"?>
       </magnitude>
     </event>
   </eventParameters>
-</q:quakemodel>`
+</q:quakeml>`
 
 func TestParseQuakeML(t *testing.T) {
 	r := strings.NewReader(testQuakeML)
