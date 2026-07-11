@@ -97,12 +97,6 @@ func main() {
 	})
 	go usgsClient.Start(ctx, eventChan)
 
-	// Start Colombia (SGC) FDSN client
-	sgcClient := ingest.NewFDSNClient("Colombia (SGC)", "http://sismo.sgc.gov.co:8443/fdsnws/event/1/query", 60*time.Second, tuiLog, func(err error) {
-		tuiLog("SGC client warning: %v", err)
-	})
-	go sgcClient.Start(ctx, eventChan)
-
 	// Start Brasil (RSBR) FDSN client
 	rsbrClient := ingest.NewFDSNClient("Brasil (RSBR)", "http://www.moho.iag.usp.br/fdsnws/event/1/query", 60*time.Second, tuiLog, func(err error) {
 		tuiLog("RSBR client warning: %v", err)
