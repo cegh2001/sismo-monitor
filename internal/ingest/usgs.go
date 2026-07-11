@@ -31,7 +31,7 @@ type USGSClient struct {
 func NewUSGSClient(url string, logger func(string, ...interface{}), errNotifier func(error)) *USGSClient {
 	return &USGSClient{
 		url:          url,
-		pollInterval: 120 * time.Second,
+		pollInterval: 30 * time.Second,
 		client:       &http.Client{Timeout: 15 * time.Second},
 		logger:       logger,
 		errNotifier:  errNotifier,
