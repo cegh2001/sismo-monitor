@@ -77,6 +77,7 @@ type Model struct {
 	updateChan       <-chan tea.Msg
 	Sismos           []alert.Sismo
 	HistoricalSismos []alert.Sismo
+	Projections      []alert.FaultProjection // Cached projections
 	Logs             []string
 	Stats            MsgStats
 	Port             string
@@ -92,10 +93,12 @@ func NewModel(updateChan <-chan tea.Msg, port string) Model {
 	if histSismos == nil {
 		histSismos = make([]alert.Sismo, 0)
 	}
+	projections := alert.ComputeProjections(histSismos, time.Now())
 	return Model{
 		updateChan:       updateChan,
 		Sismos:           make([]alert.Sismo, 0),
 		HistoricalSismos: histSismos,
+		Projections:      projections,
 		Logs:             make([]string, 0),
 		Port:             port,
 		statusMsg:        "Ready",
@@ -234,6 +237,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		sort.Slice(m.HistoricalSismos, func(i, j int) bool {
 			return m.HistoricalSismos[i].Time.Before(m.HistoricalSismos[j].Time)
 		})
+
+		// Update projections cache
+		m.Projections = alert.ComputeProjections(m.HistoricalSismos, time.Now())
 
 		return m, SubscribeToUpdates(m.updateChan)
 
@@ -432,7 +438,7 @@ func (m Model) renderPredictiveView() string {
 		headerStyle.Render("Tasa Réplicas (Omori)"))
 	s += singleDivider
 
-	projections := alert.ComputeProjections(m.HistoricalSismos, time.Now())
+	projections := m.Projections
 
 	faults := []string{"Falla de Boconó", "Falla de San Sebastián", "Falla de El Pilar", "Falla Desconocida"}
 	grouped := make(map[string][]alert.FaultProjection)

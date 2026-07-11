@@ -196,4 +196,139 @@ func TestModelUpdate(t *testing.T) {
 			t.Errorf("Expected view to toggle back to ViewDashboard, got %v", m.currentView)
 		}
 	})
+
+	t.Run("NewModel computes and caches projections on startup", func(t *testing.T) {
+		updateChan := make(chan tea.Msg, 10)
+		m := NewModel(updateChan, "8080")
+		if len(m.HistoricalSismos) == 0 {
+			t.Log("Warning: no historical sismos loaded in test (might be missing file)")
+		} else {
+			if len(m.Projections) == 0 {
+				t.Error("Expected m.Projections to be populated from historical sismos, got 0")
+			}
+			expectedProjs := alert.ComputeProjections(m.HistoricalSismos, time.Now())
+			if len(m.Projections) != len(expectedProjs) {
+				t.Errorf("Expected %d projections, got %d", len(expectedProjs), len(m.Projections))
+			}
+		}
+	})
+
+	t.Run("MsgSismo updates cached projections", func(t *testing.T) {
+		updateChan := make(chan tea.Msg, 10)
+		m := NewModel(updateChan, "8080")
+
+		// Precondition: ensure a unique cell "G_test_cell" is not in Projections cache
+		for _, p := range m.Projections {
+			if p.GridCell == "G_test_cell" {
+				t.Fatal("Precondition failed: G_test_cell already exists in historical projections")
+			}
+		}
+
+		// Send MsgSismo with new cell
+		testSismo := alert.Sismo{
+			ID:        "sismo-test-update",
+			Source:    "Simulation",
+			Magnitude: 5.5,
+			Depth:     10.0,
+			Latitude:  10.2,
+			Longitude: -70.5, // "Falla de Boconó"
+			Location:  "Test Cell Location",
+			Time:      time.Now(),
+			GridCell:  "G_test_cell",
+		}
+
+		res, _ := m.Update(MsgSismo(testSismo))
+		newModel := res.(Model)
+
+		// Assert that the new cell "G_test_cell" is now in Projections cache
+		found := false
+		var targetProj alert.FaultProjection
+		for _, p := range newModel.Projections {
+			if p.GridCell == "G_test_cell" {
+				found = true
+				targetProj = p
+				break
+			}
+		}
+
+		if !found {
+			t.Error("Expected m.Projections to contain the new cell G_test_cell after MsgSismo")
+		} else {
+			if targetProj.EventCount != 1 {
+				t.Errorf("Expected EventCount 1 for test cell, got %d", targetProj.EventCount)
+			}
+			if targetProj.MainshockMag != 5.5 {
+				t.Errorf("Expected MainshockMag 5.5, got %.1f", targetProj.MainshockMag)
+			}
+		}
+	})
+
+	t.Run("MsgSismo updates existing entry on duplicate ID and updates projections cache", func(t *testing.T) {
+		updateChan := make(chan tea.Msg, 10)
+		m := NewModel(updateChan, "8080")
+
+		now := time.Now()
+		s1 := alert.Sismo{
+			ID:        "dup-sismo-proj",
+			Source:    "Simulation",
+			Magnitude: 5.0,
+			Depth:     10.0,
+			Latitude:  10.2,
+			Longitude: -70.5,
+			Location:  "Test Cell",
+			Time:      now,
+			GridCell:  "G_dup_cell",
+		}
+		s1Update := alert.Sismo{
+			ID:        "dup-sismo-proj",
+			Source:    "Simulation",
+			Magnitude: 5.5,
+			Depth:     10.0,
+			Latitude:  10.2,
+			Longitude: -70.5,
+			Location:  "Test Cell Updated",
+			Time:      now,
+			GridCell:  "G_dup_cell",
+		}
+
+		// Inject original
+		res, _ := m.Update(MsgSismo(s1))
+		m = res.(Model)
+
+		var projBefore alert.FaultProjection
+		found := false
+		for _, p := range m.Projections {
+			if p.GridCell == "G_dup_cell" {
+				projBefore = p
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("Expected G_dup_cell in projections after first insert")
+		}
+		if projBefore.MainshockMag != 5.0 {
+			t.Errorf("Expected initial MainshockMag 5.0, got %.1f", projBefore.MainshockMag)
+		}
+
+		// Inject update
+		res, _ = m.Update(MsgSismo(s1Update))
+		m = res.(Model)
+
+		var projAfter alert.FaultProjection
+		found = false
+		for _, p := range m.Projections {
+			if p.GridCell == "G_dup_cell" {
+				projAfter = p
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatal("Expected G_dup_cell in projections after update")
+		}
+		if projAfter.MainshockMag != 5.5 {
+			t.Errorf("Expected updated MainshockMag 5.5, got %.1f", projAfter.MainshockMag)
+		}
+	})
 }

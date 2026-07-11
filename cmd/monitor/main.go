@@ -52,6 +52,7 @@ func main() {
 
 	// Initialize Gap Analyzer
 	gapAnalyzer := alert.NewGapAnalyzer("data/sismos_historicos.json")
+	go gapAnalyzer.StartWriter(ctx)
 	if err := gapAnalyzer.Load(); err != nil {
 		tuiLog("Failed to load historical gaps database: %v", err)
 	}

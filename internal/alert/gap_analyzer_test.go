@@ -1,6 +1,8 @@
 package alert
 
 import (
+	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -170,3 +172,86 @@ func TestGapAnalyzerDuplicateUpdate(t *testing.T) {
 		t.Errorf("Expected updated source 'EMSC+Funvisis', got %q", sismos[0].Source)
 	}
 }
+
+func TestGapAnalyzerBackgroundWriter(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "sismos_historicos_bg.json")
+
+	analyzer := NewGapAnalyzer(dbPath)
+	go analyzer.StartWriter(ctx)
+
+	// Since we are writing asynchronously, Add should write to saveChan.
+	s := Sismo{
+		ID:        "test-bg-1",
+		Source:    "EMSC",
+		Magnitude: 3.5,
+		Latitude:  10.0,
+		Longitude: -67.0,
+		Time:      time.Now(),
+		GridCell:  "G_0_0",
+	}
+
+	_, err := analyzer.Add(s)
+	if err != nil {
+		t.Fatalf("Failed to add sismo: %v", err)
+	}
+
+	// Wait up to 200ms for background writer to run (since it coalesces updates).
+	time.Sleep(150 * time.Millisecond)
+
+	analyzer2 := NewGapAnalyzer(dbPath)
+	err = analyzer2.Load()
+	if err != nil {
+		t.Fatalf("Failed to load: %v", err)
+	}
+
+	if len(analyzer2.sismos) != 1 {
+		t.Errorf("Expected 1 sismo, got %d", len(analyzer2.sismos))
+	}
+}
+
+func TestGapAnalyzerBackgroundWriterCoalesce(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "sismos_historicos_coalesce.json")
+
+	analyzer := NewGapAnalyzer(dbPath)
+	go analyzer.StartWriter(ctx)
+
+	// Add 5 sismos in rapid succession.
+	for i := 0; i < 5; i++ {
+		s := Sismo{
+			ID:        fmt.Sprintf("coalesce-%d", i),
+			Source:    "EMSC",
+			Magnitude: 3.0 + float64(i)*0.1,
+			Latitude:  10.0,
+			Longitude: -67.0,
+			Time:      time.Now().Add(time.Duration(i) * time.Second),
+			GridCell:  "G_0_0",
+		}
+		_, err := analyzer.Add(s)
+		if err != nil {
+			t.Fatalf("Failed to add sismo: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// Wait 150ms for coalescing to complete and the background writer to save to disk.
+	time.Sleep(150 * time.Millisecond)
+
+	analyzer2 := NewGapAnalyzer(dbPath)
+	err := analyzer2.Load()
+	if err != nil {
+		t.Fatalf("Failed to load: %v", err)
+	}
+
+	if len(analyzer2.sismos) != 5 {
+		t.Errorf("Expected 5 sismos to be saved, got %d", len(analyzer2.sismos))
+	}
+}
+

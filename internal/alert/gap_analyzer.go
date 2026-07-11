@@ -1,25 +1,34 @@
 package alert
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
 
 // GapAnalyzer manages seismic gap analysis for Venezuelan grid cells.
 type GapAnalyzer struct {
-	mu     sync.RWMutex
-	sismos []Sismo
-	dbPath string
+	mu            sync.RWMutex
+	sismos        []Sismo
+	sismosMap     map[string]int      // Quick O(1) deduplication
+	cellSismosMap map[string][]Sismo // Group sismos by grid cell (sorted by Time)
+	dbPath        string
+	saveChan      chan struct{}
+	writerRunning bool                // true if StartWriter background worker is running
 }
 
 // NewGapAnalyzer creates a new GapAnalyzer.
 func NewGapAnalyzer(dbPath string) *GapAnalyzer {
 	return &GapAnalyzer{
-		dbPath: dbPath,
+		dbPath:        dbPath,
+		saveChan:      make(chan struct{}, 1),
+		sismosMap:     make(map[string]int),
+		cellSismosMap: make(map[string][]Sismo),
 	}
 }
 
@@ -30,6 +39,7 @@ func (g *GapAnalyzer) Load() error {
 
 	if _, err := os.Stat(g.dbPath); os.IsNotExist(err) {
 		g.sismos = []Sismo{}
+		g.rebuildIndexesLocked()
 		return nil
 	}
 
@@ -44,6 +54,7 @@ func (g *GapAnalyzer) Load() error {
 	}
 
 	g.sismos = sismos
+	g.rebuildIndexesLocked()
 	return nil
 }
 
@@ -84,6 +95,7 @@ func (g *GapAnalyzer) SetSismos(sismos []Sismo) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.sismos = sismos
+	g.rebuildIndexesLocked()
 }
 
 // Add adds a new sismo to the database and evaluates if it triggers a LevelInstability alert.
@@ -92,31 +104,37 @@ func (g *GapAnalyzer) Add(s Sismo) (bool, error) {
 	defer g.mu.Unlock()
 
 	// 0. Deduplicate: check if the sismo is already in the database
-	for i, prev := range g.sismos {
-		if prev.ID == s.ID && s.ID != "" {
-			g.sismos[i] = s
-			err := g.saveLocked()
-			return false, err
+	if s.ID != "" {
+		if idx, found := g.sismosMap[s.ID]; found {
+			g.sismos[idx] = s
+			g.rebuildIndexesLocked()
+			g.saveAsyncLocked()
+			return false, nil
 		}
 	}
 
 	if s.GridCell == "" || s.GridCell == "OUT_OF_BOUNDS" {
 		g.sismos = append(g.sismos, s)
 		g.cleanupOldSismosLocked(time.Now())
-		err := g.saveLocked()
-		return false, err
+		g.rebuildIndexesLocked()
+		g.saveAsyncLocked()
+		return false, nil
 	}
 
 	// 1. Gather all sismos with Mag >= 2.0 in the 12-hour window ending at s.Time
 	cutoff := s.Time.Add(-12 * time.Hour)
 	var swarm []Sismo
-	for _, prev := range g.sismos {
-		if prev.GridCell == s.GridCell && prev.Magnitude >= 2.0 &&
-			(prev.Time.After(cutoff) || prev.Time.Equal(cutoff)) &&
-			(prev.Time.Before(s.Time) || prev.Time.Equal(s.Time)) {
-			swarm = append(swarm, prev)
+
+	if cellSismos, found := g.cellSismosMap[s.GridCell]; found {
+		for _, prev := range cellSismos {
+			if prev.Magnitude >= 2.0 &&
+				(prev.Time.After(cutoff) || prev.Time.Equal(cutoff)) &&
+				(prev.Time.Before(s.Time) || prev.Time.Equal(s.Time)) {
+				swarm = append(swarm, prev)
+			}
 		}
 	}
+
 	if s.Magnitude >= 2.0 {
 		swarm = append(swarm, s)
 	}
@@ -139,8 +157,9 @@ func (g *GapAnalyzer) Add(s Sismo) (bool, error) {
 
 	g.sismos = append(g.sismos, s)
 	g.cleanupOldSismosLocked(time.Now())
-	err := g.saveLocked()
-	return trigger, err
+	g.rebuildIndexesLocked()
+	g.saveAsyncLocked()
+	return trigger, nil
 }
 
 func (g *GapAnalyzer) cleanupOldSismosLocked(now time.Time) {
@@ -166,15 +185,8 @@ func (g *GapAnalyzer) GetActiveLockSegments(now time.Time) []string {
 	g.mu.RLock()
 	defer g.mu.RUnlock()
 
-	cells := make(map[string]bool)
-	for _, s := range g.sismos {
-		if s.GridCell != "" && s.GridCell != "OUT_OF_BOUNDS" {
-			cells[s.GridCell] = true
-		}
-	}
-
 	var locked []string
-	for cell := range cells {
+	for cell := range g.cellSismosMap {
 		if g.isLockedAt(cell, now) {
 			locked = append(locked, cell)
 		}
@@ -184,23 +196,22 @@ func (g *GapAnalyzer) GetActiveLockSegments(now time.Time) []string {
 
 // isLockedAt evaluates lock state at time 't' without acquiring locks.
 func (g *GapAnalyzer) isLockedAt(gridCell string, t time.Time) bool {
-	var cellSismos []Sismo
-	for _, s := range g.sismos {
-		if s.GridCell == gridCell && s.Time.Before(t) {
-			cellSismos = append(cellSismos, s)
-		}
-	}
-
-	if len(cellSismos) == 0 {
+	cellSismos, found := g.cellSismosMap[gridCell]
+	if !found {
 		return false
 	}
 
-	var earliest time.Time
-	for _, s := range cellSismos {
-		if earliest.IsZero() || s.Time.Before(earliest) {
-			earliest = s.Time
-		}
+	// Filter using binary search for time < t
+	idx := sort.Search(len(cellSismos), func(i int) bool {
+		return !cellSismos[i].Time.Before(t)
+	})
+
+	if idx == 0 {
+		return false
 	}
+
+	filteredCount := idx
+	earliest := cellSismos[0].Time
 
 	span := t.Sub(earliest)
 	months := span.Hours() / (24.0 * 30.0)
@@ -208,18 +219,87 @@ func (g *GapAnalyzer) isLockedAt(gridCell string, t time.Time) bool {
 		months = 1.0
 	}
 
-	avg := float64(len(cellSismos)) / months
+	avg := float64(filteredCount) / months
 	if avg < 1.0 {
 		return false
 	}
 
 	// 90 days of silence before t
 	silenceCutoff := t.Add(-90 * 24 * time.Hour)
-	for _, s := range cellSismos {
-		if s.Time.After(silenceCutoff) || s.Time.Equal(silenceCutoff) {
-			return false
-		}
+	latestSismoBeforeT := cellSismos[idx-1]
+	if latestSismoBeforeT.Time.After(silenceCutoff) || latestSismoBeforeT.Time.Equal(silenceCutoff) {
+		return false
 	}
 
 	return true
+}
+
+// rebuildIndexesLocked maintains index consistency (caller must hold lock).
+func (g *GapAnalyzer) rebuildIndexesLocked() {
+	// First, sort g.sismos by Time to make binary search on slices possible
+	sort.Slice(g.sismos, func(i, j int) bool {
+		return g.sismos[i].Time.Before(g.sismos[j].Time)
+	})
+
+	g.sismosMap = make(map[string]int)
+	g.cellSismosMap = make(map[string][]Sismo)
+
+	for i, s := range g.sismos {
+		if s.ID != "" {
+			g.sismosMap[s.ID] = i
+		}
+		if s.GridCell != "" && s.GridCell != "OUT_OF_BOUNDS" {
+			g.cellSismosMap[s.GridCell] = append(g.cellSismosMap[s.GridCell], s)
+		}
+	}
+}
+
+// StartWriter runs in the background and coalesces writes to disk.
+func (g *GapAnalyzer) StartWriter(ctx context.Context) {
+	g.mu.Lock()
+	g.writerRunning = true
+	g.mu.Unlock()
+
+	cooldown := 50 * time.Millisecond
+	var pending bool
+	var timerChan <-chan time.Time
+
+	for {
+		select {
+		case <-ctx.Done():
+			if pending {
+				g.mu.Lock()
+				_ = g.saveLocked()
+				g.mu.Unlock()
+			}
+			return
+
+		case <-g.saveChan:
+			pending = true
+			timerChan = time.After(cooldown)
+
+		case <-timerChan:
+			if pending {
+				g.mu.Lock()
+				_ = g.saveLocked()
+				g.mu.Unlock()
+				pending = false
+				timerChan = nil
+			}
+		}
+	}
+}
+
+// saveAsyncLocked handles background save orchestration (caller must hold mu write lock).
+func (g *GapAnalyzer) saveAsyncLocked() {
+	if g.writerRunning {
+		if g.saveChan != nil {
+			select {
+			case g.saveChan <- struct{}{}:
+			default:
+			}
+		}
+	} else {
+		_ = g.saveLocked()
+	}
 }
