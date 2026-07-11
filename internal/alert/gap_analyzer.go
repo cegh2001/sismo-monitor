@@ -92,9 +92,11 @@ func (g *GapAnalyzer) Add(s Sismo) (bool, error) {
 	defer g.mu.Unlock()
 
 	// 0. Deduplicate: check if the sismo is already in the database
-	for _, prev := range g.sismos {
+	for i, prev := range g.sismos {
 		if prev.ID == s.ID && s.ID != "" {
-			return false, nil
+			g.sismos[i] = s
+			err := g.saveLocked()
+			return false, err
 		}
 	}
 

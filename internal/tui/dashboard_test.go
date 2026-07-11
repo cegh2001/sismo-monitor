@@ -147,4 +147,53 @@ func TestModelUpdate(t *testing.T) {
 			t.Errorf("Expected third sismo to be s2 (newest), got %s", m.Sismos[2].ID)
 		}
 	})
+
+	t.Run("MsgSismo updates existing entry on duplicate ID", func(t *testing.T) {
+		m := model
+		now := time.Now()
+
+		s1 := alert.Sismo{ID: "dup-sismo", Magnitude: 4.0, Time: now}
+		s1Update := alert.Sismo{ID: "dup-sismo", Magnitude: 4.5, Time: now}
+
+		// Inject original
+		res, _ := m.Update(MsgSismo(s1))
+		m = res.(Model)
+		if len(m.Sismos) != 1 {
+			t.Fatalf("Expected 1 sismo, got %d", len(m.Sismos))
+		}
+		if m.Sismos[0].Magnitude != 4.0 {
+			t.Errorf("Expected magnitude 4.0, got %.1f", m.Sismos[0].Magnitude)
+		}
+
+		// Inject update
+		res, _ = m.Update(MsgSismo(s1Update))
+		m = res.(Model)
+		if len(m.Sismos) != 1 {
+			t.Fatalf("Expected Sismos list length to still be 1, got %d", len(m.Sismos))
+		}
+		if m.Sismos[0].Magnitude != 4.5 {
+			t.Errorf("Expected updated magnitude 4.5, got %.1f", m.Sismos[0].Magnitude)
+		}
+	})
+
+	t.Run("KeyMsg p toggles currentView between ViewDashboard and ViewPredictive", func(t *testing.T) {
+		m := model
+		if m.currentView != ViewDashboard {
+			t.Errorf("Expected initial view to be ViewDashboard, got %v", m.currentView)
+		}
+
+		// Press 'p' to toggle to ViewPredictive
+		res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+		m = res.(Model)
+		if m.currentView != ViewPredictive {
+			t.Errorf("Expected view to toggle to ViewPredictive, got %v", m.currentView)
+		}
+
+		// Press 'p' again to toggle back to ViewDashboard
+		res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+		m = res.(Model)
+		if m.currentView != ViewDashboard {
+			t.Errorf("Expected view to toggle back to ViewDashboard, got %v", m.currentView)
+		}
+	})
 }

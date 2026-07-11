@@ -121,3 +121,52 @@ func TestGapAnalyzerLockedAndTrigger(t *testing.T) {
 		t.Errorf("Event 3 should have triggered instability")
 	}
 }
+
+func TestGapAnalyzerDuplicateUpdate(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "sismos_historicos.json")
+
+	analyzer := NewGapAnalyzer(dbPath)
+
+	now := time.Now()
+	s := Sismo{
+		ID:        "test-dup-1",
+		Source:    "EMSC",
+		Magnitude: 4.0,
+		Latitude:  10.0,
+		Longitude: -67.0,
+		Time:      now,
+		GridCell:  "G_0_0",
+	}
+
+	_, err := analyzer.Add(s)
+	if err != nil {
+		t.Fatalf("Failed to add sismo: %v", err)
+	}
+
+	s.Magnitude = 4.5
+	s.Source = "EMSC+Funvisis"
+	_, err = analyzer.Add(s)
+	if err != nil {
+		t.Fatalf("Failed to add duplicate sismo: %v", err)
+	}
+
+	analyzer2 := NewGapAnalyzer(dbPath)
+	err = analyzer2.Load()
+	if err != nil {
+		t.Fatalf("Failed to load analyzer: %v", err)
+	}
+
+	sismos := analyzer2.sismos
+	if len(sismos) != 1 {
+		t.Fatalf("Expected 1 sismo in database, got %d", len(sismos))
+	}
+
+	if sismos[0].Magnitude != 4.5 {
+		t.Errorf("Expected updated magnitude 4.5, got %.1f", sismos[0].Magnitude)
+	}
+
+	if sismos[0].Source != "EMSC+Funvisis" {
+		t.Errorf("Expected updated source 'EMSC+Funvisis', got %q", sismos[0].Source)
+	}
+}

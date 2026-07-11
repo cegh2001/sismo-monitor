@@ -44,6 +44,9 @@ func main() {
 	swarmQueue := alert.NewSwarmQueue()
 	notifier := alert.NewPushoverNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey, tuiLog)
 
+	// Initialize Deduplicator
+	deduplicator := alert.NewDeduplicator(120*time.Second, 50.0)
+
 	// Start rate-limited notification loop
 	go notifier.Start(ctx)
 
@@ -93,6 +96,18 @@ func main() {
 	})
 	go usgsClient.Start(ctx, eventChan)
 
+	// Start Colombia (SGC) FDSN client
+	sgcClient := ingest.NewFDSNClient("Colombia (SGC)", "http://sismo.sgc.gov.co:8443/fdsnws/event/1/query", 60*time.Second, tuiLog, func(err error) {
+		tuiLog("SGC client warning: %v", err)
+	})
+	go sgcClient.Start(ctx, eventChan)
+
+	// Start Brasil (RSBR) FDSN client
+	rsbrClient := ingest.NewFDSNClient("Brasil (RSBR)", "http://www.moho.iag.usp.br/fdsnws/event/1/query", 60*time.Second, tuiLog, func(err error) {
+		tuiLog("RSBR client warning: %v", err)
+	})
+	go rsbrClient.Start(ctx, eventChan)
+
 	// Start HTTP API Simulation server
 	simServer := api.NewSimulationServer(cfg.Port, eventChan, tuiLog)
 	go func() {
@@ -111,44 +126,52 @@ func main() {
 			case <-ctx.Done():
 				return
 			case s := <-eventChan:
-				// 1. Classify threat level
-				level := alert.ClassifyDanger(s)
+				// Deduplicate and fuse events
+				fused, isUpdate := deduplicator.Add(s)
 
-				// 2. Check swarm condition
-				isSwarm := swarmQueue.AddAndCheck(s)
+				// 1. Classify threat level
+				level := alert.ClassifyDanger(fused)
+
+				var isSwarm bool
+				if !isUpdate {
+					// 2. Check swarm condition
+					isSwarm = swarmQueue.AddAndCheck(fused)
+				}
 
 				// 2.b Check seismic gap/instability condition
-				isInstability, err := gapAnalyzer.Add(s)
+				isInstability, err := gapAnalyzer.Add(fused)
 				if err != nil {
 					tuiLog("Error adding to gap analyzer: %v", err)
 				}
 
 				// 3. Update stats counter
-				stats.TotalEvents++
-				if s.Distance <= 300.0 {
-					stats.LocalEvents++
-				}
-				switch s.Source {
-				case "EMSC":
-					stats.EmscEvents++
-				case "Funvisis":
-					stats.FunvisisCount++
-				case "USGS":
-					stats.USGSEvents++
-				case "Simulation":
-					stats.SimEvents++
-				}
-				switch level {
-				case alert.LevelInfo:
-					stats.InfoCount++
-				case alert.LevelPreAlert:
-					stats.PreAlertCount++
-				case alert.LevelCritical:
-					stats.CriticalCount++
-				}
-				if isInstability {
-					stats.InstabilityCount++
-					level = alert.LevelInstability
+				if !isUpdate {
+					stats.TotalEvents++
+					if fused.Distance <= 300.0 {
+						stats.LocalEvents++
+					}
+					switch s.Source {
+					case "EMSC":
+						stats.EmscEvents++
+					case "Funvisis":
+						stats.FunvisisCount++
+					case "USGS":
+						stats.USGSEvents++
+					case "Simulation":
+						stats.SimEvents++
+					}
+					switch level {
+					case alert.LevelInfo:
+						stats.InfoCount++
+					case alert.LevelPreAlert:
+						stats.PreAlertCount++
+					case alert.LevelCritical:
+						stats.CriticalCount++
+					}
+					if isInstability {
+						stats.InstabilityCount++
+						level = alert.LevelInstability
+					}
 				}
 
 				stats.SwarmQueueLen = len(swarmQueue.GetEvents())
@@ -157,21 +180,23 @@ func main() {
 
 				// 4. Update TUI events list
 				select {
-				case tuiChan <- tui.MsgSismo(s):
+				case tuiChan <- tui.MsgSismo(fused):
 				default:
 				}
 
-				// 5. Trigger notifications for Critical, Pre-Alert, and Instability events
-				if level == alert.LevelCritical || level == alert.LevelPreAlert || level == alert.LevelInstability {
-					tuiLog("%s detected: Dispatching notification for %s...", level, s.Location)
-					_ = notifier.Notify(ctx, alert.Alert{Sismo: s, Level: level})
-				}
+				if !isUpdate {
+					// 5. Trigger notifications for Critical, Pre-Alert, and Instability events
+					if level == alert.LevelCritical || level == alert.LevelPreAlert || level == alert.LevelInstability {
+						tuiLog("%s detected: Dispatching notification for %s...", level, fused.Location)
+						_ = notifier.Notify(ctx, alert.Alert{Sismo: fused, Level: level})
+					}
 
-				// 6. Trigger swarm notification if condition is met
-				if isSwarm {
-					stats.SwarmCount++
-					tuiLog("SWARM DETECTED: >= 5 events with M >= 3.0 under 300km in last 6 hours!")
-					_ = notifier.Notify(ctx, alert.Alert{Sismo: s, Level: alert.LevelSwarm})
+					// 6. Trigger swarm notification if condition is met
+					if isSwarm {
+						stats.SwarmCount++
+						tuiLog("SWARM DETECTED: >= 5 events with M >= 3.0 under 300km in last 6 hours!")
+						_ = notifier.Notify(ctx, alert.Alert{Sismo: fused, Level: alert.LevelSwarm})
+					}
 				}
 
 				// 7. Update TUI stats panel

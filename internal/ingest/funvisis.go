@@ -272,6 +272,8 @@ func (s *FunvisisScraper) parseRowData(dateStr, timeStr, latStr, lonStr, depthSt
 		locStr = "Venezuelan Region"
 	}
 
+	gridCell := geo.GetGridCell(latVal, lonVal)
+
 	return alert.Sismo{
 		ID:        eventID,
 		Source:    "Funvisis",
@@ -282,6 +284,7 @@ func (s *FunvisisScraper) parseRowData(dateStr, timeStr, latStr, lonStr, depthSt
 		Location:  locStr,
 		Time:      eventTime,
 		Distance:  dist,
+		GridCell:  gridCell,
 	}, nil
 }
 

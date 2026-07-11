@@ -47,28 +47,44 @@ type MsgStats struct {
 	InstabilityCount int
 }
 
+// ViewType defines the view mode of the dashboard.
+type ViewType int
+
+const (
+	ViewDashboard ViewType = iota
+	ViewPredictive
+)
+
 // Model represents the state of the TUI dashboard.
 type Model struct {
-	updateChan  <-chan tea.Msg
-	Sismos      []alert.Sismo
-	Logs        []string
-	Stats       MsgStats
-	Port        string
-	statusMsg   string
-	logScroll   int
-	sismoScroll int
+	updateChan       <-chan tea.Msg
+	Sismos           []alert.Sismo
+	HistoricalSismos []alert.Sismo
+	Logs             []string
+	Stats            MsgStats
+	Port             string
+	statusMsg        string
+	logScroll        int
+	sismoScroll      int
+	currentView      ViewType
 }
 
 // NewModel initializes the Bubbletea model.
 func NewModel(updateChan <-chan tea.Msg, port string) Model {
+	histSismos, _ := alert.LoadHistoricalSismos("data/sismos_historicos.json")
+	if histSismos == nil {
+		histSismos = make([]alert.Sismo, 0)
+	}
 	return Model{
-		updateChan:  updateChan,
-		Sismos:      make([]alert.Sismo, 0),
-		Logs:        make([]string, 0),
-		Port:        port,
-		statusMsg:   "Ready",
-		logScroll:   0,
-		sismoScroll: 0,
+		updateChan:       updateChan,
+		Sismos:           make([]alert.Sismo, 0),
+		HistoricalSismos: histSismos,
+		Logs:             make([]string, 0),
+		Port:             port,
+		statusMsg:        "Ready",
+		logScroll:        0,
+		sismoScroll:      0,
+		currentView:      ViewDashboard,
 	}
 }
 
@@ -110,6 +126,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "i":
 			m.statusMsg = "Triggering instability test alerts (5 hist, 3 swarm)..."
 			return m, triggerInstabilitySimulation(m.Port)
+		case "p":
+			if m.currentView == ViewDashboard {
+				m.currentView = ViewPredictive
+				m.statusMsg = "Switched to Projections & Crustal Stress Monitor"
+			} else {
+				m.currentView = ViewDashboard
+				m.statusMsg = "Switched to Main Dashboard"
+			}
+			return m, nil
 		case "up":
 			if len(m.Logs) > 10 {
 				m.logScroll++
@@ -153,7 +178,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case MsgSismo:
-		m.Sismos = append(m.Sismos, alert.Sismo(msg))
+		found := false
+		for i, existing := range m.Sismos {
+			if existing.ID == msg.ID {
+				m.Sismos[i] = alert.Sismo(msg)
+				found = true
+				break
+			}
+		}
+		if !found {
+			m.Sismos = append(m.Sismos, alert.Sismo(msg))
+		}
 		sort.Slice(m.Sismos, func(i, j int) bool {
 			return m.Sismos[i].Time.Before(m.Sismos[j].Time)
 		})
@@ -166,6 +201,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sismoScroll = len(m.Sismos) - 10
 			}
 		}
+
+		// Update HistoricalSismos
+		foundHist := false
+		for i, existing := range m.HistoricalSismos {
+			if existing.ID == msg.ID {
+				m.HistoricalSismos[i] = alert.Sismo(msg)
+				foundHist = true
+				break
+			}
+		}
+		if !foundHist {
+			m.HistoricalSismos = append(m.HistoricalSismos, alert.Sismo(msg))
+		}
+		sort.Slice(m.HistoricalSismos, func(i, j int) bool {
+			return m.HistoricalSismos[i].Time.Before(m.HistoricalSismos[j].Time)
+		})
+
 		return m, SubscribeToUpdates(m.updateChan)
 
 	case MsgLog:
@@ -260,6 +312,10 @@ func triggerInstabilitySimulation(port string) tea.Cmd {
 
 // View outputs the textual representation of the dashboard.
 func (m Model) View() string {
+	if m.currentView == ViewPredictive {
+		return m.renderPredictiveView()
+	}
+
 	var s string
 	s += doubleDivider
 	s += "                            VENEZUELAN SEISMIC MONITOR & ALERT SYSTEM\n"
@@ -335,8 +391,49 @@ func (m Model) View() string {
 		}
 	}
 	s += singleDivider
-	s += "  [q] Quit | [t] Trigger Critical | [s] Trigger Swarm | [i] Trigger Instability\n"
+	s += "  [q] Quit | [t] Trigger Critical | [s] Trigger Swarm | [i] Trigger Instability | [p] Projections\n"
 	s += "  [Arrows] Up/Down: Scroll Logs | Left/Right: Scroll Sismos\n"
+	s += doubleDivider
+	return s
+}
+
+func (m Model) renderPredictiveView() string {
+	var s string
+	s += doubleDivider
+	s += "                            PROJECTIONS & CRUSTAL STRESS MONITOR\n"
+	s += doubleDivider
+	s += fmt.Sprintf("  STATUS: Active | API: 127.0.0.1:%s | ACTION: %s\n", m.Port, m.statusMsg)
+	s += singleDivider
+	s += "  ACTIVE SEISMOGENIC FAULTS ANALYSIS (Boconó, San Sebastián, El Pilar):\n"
+	s += singleDivider
+	s += fmt.Sprintf("  %-22s  %-8s  %-8s  %-12s  %-12s  %-12s\n", "Fault Zone", "Cell", "Events", "b-Value", "Bath Limit", "Omori Rate")
+
+	projections := alert.ComputeProjections(m.HistoricalSismos, time.Now())
+
+	if len(projections) == 0 {
+		s += "  (No active projections computed yet - no historical or real-time data)\n"
+	} else {
+		for _, p := range projections {
+			bValStr := "N/A"
+			if p.BValue > 0 {
+				bValStr = fmt.Sprintf("%.2f", p.BValue)
+			}
+			bathStr := "N/A"
+			if p.MainshockMag > 0 {
+				bathStr = fmt.Sprintf("M %.1f", p.BathMaxReplica)
+			}
+			omoriStr := "N/A"
+			if p.MainshockMag > 0 {
+				omoriStr = fmt.Sprintf("%.2f/day", p.ExpectedReplicas24)
+			}
+
+			s += fmt.Sprintf("  %-22s  %-8s  %-8d  %-12s  %-12s  %-12s\n",
+				p.FaultName, p.GridCell, p.EventCount, bValStr, bathStr, omoriStr)
+		}
+	}
+
+	s += singleDivider
+	s += "  [p] Volver al panel de monitoreo | [q] Quit\n"
 	s += doubleDivider
 	return s
 }

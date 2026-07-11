@@ -86,6 +86,9 @@ func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 				}
 
 				sismo := c.mapMessageToSismo(msg)
+				if sismo.GridCell == "OUT_OF_BOUNDS" {
+					continue
+				}
 				select {
 				case out <- sismo:
 				default:
@@ -153,6 +156,8 @@ func (c *EMSCClient) mapMessageToSismo(msg alertMessage) alert.Sismo {
 		location = "Unknown Region (EMSC)"
 	}
 
+	gridCell := geo.GetGridCell(lat, lon)
+
 	return alert.Sismo{
 		ID:        msg.Data.Properties.Unid,
 		Source:    "EMSC",
@@ -163,5 +168,6 @@ func (c *EMSCClient) mapMessageToSismo(msg alertMessage) alert.Sismo {
 		Location:  location,
 		Time:      t,
 		Distance:  dist,
+		GridCell:  gridCell,
 	}
 }

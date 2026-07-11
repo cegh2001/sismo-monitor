@@ -77,6 +77,9 @@ func TestFunvisisHTMLParser(t *testing.T) {
 	if e.Source != "Funvisis" {
 		t.Errorf("Expected Source 'Funvisis', got %q", e.Source)
 	}
+	if e.GridCell == "" || e.GridCell == "OUT_OF_BOUNDS" {
+		t.Errorf("Expected valid GridCell, got %q", e.GridCell)
+	}
 
 	// Test fallback parser
 	_, err = scraper.ParseHTMLFallback("")
@@ -135,6 +138,9 @@ func TestFunvisisJSONParser(t *testing.T) {
 	}
 	if e.Location != "10 km al norte de La Guaira" {
 		t.Errorf("Expected Location '10 km al norte de La Guaira', got %q", e.Location)
+	}
+	if e.GridCell == "" || e.GridCell == "OUT_OF_BOUNDS" {
+		t.Errorf("Expected valid GridCell, got %q", e.GridCell)
 	}
 }
 
