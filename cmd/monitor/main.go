@@ -110,7 +110,7 @@ func main() {
 	go geofonClient.Start(ctx, eventChan)
 
 	// Start HTTP API Simulation server
-	simServer := api.NewSimulationServer(cfg.Port, eventChan, tuiLog)
+	simServer := api.NewSimulationServer(cfg.Port, eventChan, gapAnalyzer, tuiLog)
 	go func() {
 		if err := simServer.Start(ctx); err != nil {
 			tuiLog("Simulation HTTP server failed: %v", err)

@@ -13,7 +13,7 @@ import (
 func TestHandleTestAlert(t *testing.T) {
 	t.Run("Valid POST Request", func(t *testing.T) {
 		out := make(chan alert.Sismo, 10)
-		server := NewSimulationServer("8080", out, nil)
+		server := NewSimulationServer("8080", out, nil, nil)
 
 		payload := TestAlertPayload{
 			Magnitude: 5.5,
@@ -55,7 +55,7 @@ func TestHandleTestAlert(t *testing.T) {
 
 	t.Run("Method Not Allowed", func(t *testing.T) {
 		out := make(chan alert.Sismo, 10)
-		server := NewSimulationServer("8080", out, nil)
+		server := NewSimulationServer("8080", out, nil, nil)
 
 		req := httptest.NewRequest(http.MethodGet, "/test-alert", nil)
 		w := httptest.NewRecorder()
@@ -72,7 +72,7 @@ func TestHandleTestAlert(t *testing.T) {
 
 	t.Run("Invalid JSON", func(t *testing.T) {
 		out := make(chan alert.Sismo, 10)
-		server := NewSimulationServer("8080", out, nil)
+		server := NewSimulationServer("8080", out, nil, nil)
 
 		req := httptest.NewRequest(http.MethodPost, "/test-alert", bytes.NewBufferString("{invalid-json"))
 		w := httptest.NewRecorder()
@@ -89,7 +89,7 @@ func TestHandleTestAlert(t *testing.T) {
 
 	t.Run("Invalid Magnitude", func(t *testing.T) {
 		out := make(chan alert.Sismo, 10)
-		server := NewSimulationServer("8080", out, nil)
+		server := NewSimulationServer("8080", out, nil, nil)
 
 		payload := TestAlertPayload{
 			Magnitude: -1.0,

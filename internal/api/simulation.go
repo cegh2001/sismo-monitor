@@ -15,17 +15,19 @@ import (
 
 // SimulationServer exposes an HTTP endpoint to inject mock seismic events.
 type SimulationServer struct {
-	port   string
-	out    chan<- alert.Sismo
-	logger func(string, ...interface{})
+	port        string
+	out         chan<- alert.Sismo
+	logger      func(string, ...interface{})
+	gapAnalyzer *alert.GapAnalyzer
 }
 
 // NewSimulationServer initializes a SimulationServer.
-func NewSimulationServer(port string, out chan<- alert.Sismo, logger func(string, ...interface{})) *SimulationServer {
+func NewSimulationServer(port string, out chan<- alert.Sismo, gapAnalyzer *alert.GapAnalyzer, logger func(string, ...interface{})) *SimulationServer {
 	return &SimulationServer{
-		port:   port,
-		out:    out,
-		logger: logger,
+		port:        port,
+		out:         out,
+		logger:      logger,
+		gapAnalyzer: gapAnalyzer,
 	}
 }
 
@@ -78,6 +80,12 @@ func (s *SimulationServer) handleTestAlert(w http.ResponseWriter, r *http.Reques
 	}
 
 	if p.InstabilityTest {
+		// 0. Purge prior simulation events from the gap analyzer to prevent
+		//    false-positive cascades on repeated instability test runs.
+		if s.gapAnalyzer != nil {
+			s.gapAnalyzer.PurgeSimulationEvents()
+		}
+
 		// 1. Inject 5 historical events 100 days ago to lock the cell G_0_0
 		pastTime := time.Now().AddDate(0, 0, -100)
 		for i := 0; i < 5; i++ {

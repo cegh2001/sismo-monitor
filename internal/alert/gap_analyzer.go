@@ -98,6 +98,23 @@ func (g *GapAnalyzer) SetSismos(sismos []Sismo) {
 	g.rebuildIndexesLocked()
 }
 
+// PurgeSimulationEvents removes all simulation events from the in-memory
+// sismos list and rebuilds indexes. This prevents accumulation of synthetic
+// test events that cause false-positive instability triggers on repeated runs.
+func (g *GapAnalyzer) PurgeSimulationEvents() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	var filtered []Sismo
+	for _, s := range g.sismos {
+		if s.Source != "Simulation" {
+			filtered = append(filtered, s)
+		}
+	}
+	g.sismos = filtered
+	g.rebuildIndexesLocked()
+}
+
 // Add adds a new sismo to the database and evaluates if it triggers a LevelInstability alert.
 func (g *GapAnalyzer) Add(s Sismo) (bool, error) {
 	g.mu.Lock()

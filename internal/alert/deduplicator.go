@@ -28,7 +28,14 @@ func NewDeduplicator(window time.Duration, maxDistance float64) *Deduplicator {
 // Add processes an incoming event. If it matches a recently processed event (within window and maxDistance),
 // it fuses the two events and returns the fused event with isUpdate = true.
 // Otherwise, it registers the event as new and returns it with isUpdate = false.
+//
+// Simulation events bypass deduplication entirely — they are synthetic test events
+// that should never interfere with real event fusion or with each other.
 func (d *Deduplicator) Add(s Sismo) (Sismo, bool) {
+	if s.Source == "Simulation" {
+		return s, false
+	}
+
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
