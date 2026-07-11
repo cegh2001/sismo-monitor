@@ -105,12 +105,6 @@ func TestOmoriReplicaRates(t *testing.T) {
 
 	proj := AnalyzeGridCell("G_1_1", sismos, now)
 
-	// Since elapsed time is 5 hours, c = 0.5 hours:
-	// N_obs = 5 replicas
-	// tElapsed = 5.0 hours
-	// k = N_obs / ln((tElapsed + c)/c) = 5.0 / ln((5.0 + 0.5) / 0.5) = 5.0 / ln(11) = 5.0 / 2.397895 = 2.08516
-	// Omori rate at now = k / (tElapsed + c)^1 = 2.08516 / (5.0 + 0.5) = 2.08516 / 5.5 = 0.37912 replicas/hour
-	// Expected replicas next 24h = k * ln((5 + 24 + 0.5) / (5 + 0.5)) = 2.08516 * ln(29.5 / 5.5) = 2.08516 * ln(5.363636) = 2.08516 * 1.67964 = 3.5023
 	if proj.OmoriReplicaRate <= 0.0 {
 		t.Errorf("Expected positive Omori replica rate, got %f", proj.OmoriReplicaRate)
 	}
@@ -146,5 +140,71 @@ func TestGetFaultName(t *testing.T) {
 		if name != tc.expected {
 			t.Errorf("For coordinates (%.1f, %.1f) expected %q, got %q", tc.lat, tc.lon, tc.expected, name)
 		}
+	}
+}
+
+func TestComputeProjections(t *testing.T) {
+	now := time.Now()
+	sismos := []Sismo{
+		{
+			ID:        "s1",
+			GridCell:  "G_2_2",
+			Magnitude: 3.0,
+			Latitude:  10.5,
+			Longitude: -66.0,
+			Time:      now.Add(-1 * time.Hour),
+		},
+		{
+			ID:        "s2",
+			GridCell:  "G_1_1",
+			Magnitude: 5.0,
+			Latitude:  8.0,
+			Longitude: -71.5,
+			Time:      now.Add(-2 * time.Hour),
+		},
+		{
+			ID:        "s3",
+			GridCell:  "OUT_OF_BOUNDS",
+			Magnitude: 4.0,
+			Latitude:  15.0,
+			Longitude: -60.0,
+			Time:      now.Add(-3 * time.Hour),
+		},
+		{
+			ID:        "s4",
+			GridCell:  "",
+			Magnitude: 2.0,
+			Latitude:  0.0,
+			Longitude: 0.0,
+			Time:      now.Add(-4 * time.Hour),
+		},
+		{
+			ID:        "s5",
+			GridCell:  "G_1_1",
+			Magnitude: 3.5,
+			Latitude:  8.0,
+			Longitude: -71.5,
+			Time:      now.Add(-10 * time.Minute),
+		},
+	}
+
+	projections := ComputeProjections(sismos, now)
+
+	if len(projections) != 2 {
+		t.Fatalf("Expected 2 projections, got %d", len(projections))
+	}
+
+	if projections[0].GridCell != "G_1_1" {
+		t.Errorf("Expected first projection cell to be 'G_1_1', got %q", projections[0].GridCell)
+	}
+	if projections[0].EventCount != 2 {
+		t.Errorf("Expected event count for G_1_1 to be 2, got %d", projections[0].EventCount)
+	}
+
+	if projections[1].GridCell != "G_2_2" {
+		t.Errorf("Expected second projection cell to be 'G_2_2', got %q", projections[1].GridCell)
+	}
+	if projections[1].EventCount != 1 {
+		t.Errorf("Expected event count for G_2_2 to be 1, got %d", projections[1].EventCount)
 	}
 }

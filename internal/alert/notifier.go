@@ -19,12 +19,13 @@ type Notifier interface {
 
 // PushoverNotifier implements Notifier with rate-limiting and Pushover API integration.
 type PushoverNotifier struct {
-	appToken string
-	userKey  string
-	apiURL   string
-	client   *http.Client
-	queue    chan Alert
-	logger   func(string, ...interface{})
+	appToken          string
+	userKey           string
+	apiURL            string
+	client            *http.Client
+	queue             chan Alert
+	logger            func(string, ...interface{})
+	rateLimitInterval time.Duration
 }
 
 // NewPushoverNotifier initializes a PushoverNotifier. If token or user key is empty,
@@ -38,12 +39,13 @@ func NewPushoverNotifier(appToken, userKey string, logger func(string, ...interf
 	}
 
 	return &PushoverNotifier{
-		appToken: appToken,
-		userKey:  userKey,
-		apiURL:   "https://api.pushover.net/1/messages.json",
-		client:   &http.Client{Timeout: 10 * time.Second},
-		queue:    make(chan Alert, 100),
-		logger:   logger,
+		appToken:          appToken,
+		userKey:           userKey,
+		apiURL:            "https://api.pushover.net/1/messages.json",
+		client:            &http.Client{Timeout: 10 * time.Second},
+		queue:             make(chan Alert, 100),
+		logger:            logger,
+		rateLimitInterval: 10 * time.Second,
 	}
 }
 
@@ -61,31 +63,34 @@ func (n *PushoverNotifier) Notify(ctx context.Context, alert Alert) error {
 }
 
 // Start runs the notifier consumption loop. It processes alerts from the queue,
-// enforcing a rate limit of at least 10 seconds between API dispatches.
+// enforcing a rate limit of at least 10 seconds between API dispatches (configurable via rateLimitInterval).
 func (n *PushoverNotifier) Start(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-
 	if n.logger != nil {
 		n.logger("Pushover client started. AppToken configured: %t, UserKey configured: %t", n.appToken != "", n.userKey != "")
 	}
+
+	var lastSent time.Time
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case alert := <-n.queue:
+			elapsed := time.Since(lastSent)
+			if elapsed < n.rateLimitInterval {
+				remaining := n.rateLimitInterval - elapsed
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(remaining):
+				}
+			}
+
 			err := n.send(alert)
 			if err != nil && n.logger != nil {
 				n.logger("Error sending Pushover notification: %v", err)
 			}
-			
-			// Rate limiting: sleep until ticker ticks to ensure at least 10s between notifications
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-			}
+			lastSent = time.Now()
 		}
 	}
 }

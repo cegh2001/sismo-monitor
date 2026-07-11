@@ -61,21 +61,18 @@ func CalculateBValue(magnitudes []float64, Mc float64, deltaM float64) float64 {
 }
 
 // AnalyzeGridCell computes the Gutenberg-Richter, Omori, and Bath metrics for a specific grid cell.
-func AnalyzeGridCell(cell string, sismos []Sismo, now time.Time) FaultProjection {
+// It accepts only the sismos belonging to the cell, avoiding scanning the entire history.
+func AnalyzeGridCell(cell string, cellSismos []Sismo, now time.Time) FaultProjection {
 	var magnitudes []float64
-	var cellSismos []Sismo
 	var mainshock Sismo
 	hasMainshock := false
 
-	for _, s := range sismos {
-		if s.GridCell == cell {
-			cellSismos = append(cellSismos, s)
-			magnitudes = append(magnitudes, s.Magnitude)
-			if s.Magnitude >= 4.5 {
-				if !hasMainshock || s.Magnitude > mainshock.Magnitude {
-					mainshock = s
-					hasMainshock = true
-				}
+	for _, s := range cellSismos {
+		magnitudes = append(magnitudes, s.Magnitude)
+		if s.Magnitude >= 4.5 {
+			if !hasMainshock || s.Magnitude > mainshock.Magnitude {
+				mainshock = s
+				hasMainshock = true
 			}
 		}
 	}
@@ -144,23 +141,24 @@ func AnalyzeGridCell(cell string, sismos []Sismo, now time.Time) FaultProjection
 }
 
 // ComputeProjections calculates projections for all active grid cells present in the given sismos slice.
+// Sismos are grouped by cell first in O(N) to optimize overall computational complexity.
 func ComputeProjections(sismos []Sismo, now time.Time) []FaultProjection {
-	cellsMap := make(map[string]bool)
+	grouped := make(map[string][]Sismo)
 	for _, s := range sismos {
 		if s.GridCell != "" && s.GridCell != "OUT_OF_BOUNDS" {
-			cellsMap[s.GridCell] = true
+			grouped[s.GridCell] = append(grouped[s.GridCell], s)
 		}
 	}
 
 	var cells []string
-	for cell := range cellsMap {
+	for cell := range grouped {
 		cells = append(cells, cell)
 	}
 	sort.Strings(cells)
 
 	var projections []FaultProjection
 	for _, cell := range cells {
-		proj := AnalyzeGridCell(cell, sismos, now)
+		proj := AnalyzeGridCell(cell, grouped[cell], now)
 		projections = append(projections, proj)
 	}
 
