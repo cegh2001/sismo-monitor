@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"sismo-monitor/internal/alert"
@@ -68,9 +67,10 @@ type Model struct {
 	statusMsg        string
 	logScroll        int
 	sismoScroll      int
+	predictiveScroll int
+	termHeight       int
+	termWidth        int
 	currentView      ViewType
-	viewport         viewport.Model
-	viewportReady    bool // false = content needs SetContent before next View()
 }
 
 // NewModel initializes the Bubbletea model.
@@ -80,7 +80,6 @@ func NewModel(updateChan <-chan tea.Msg, port string) Model {
 		histSismos = make([]alert.Sismo, 0)
 	}
 	projections := alert.ComputeProjections(histSismos, time.Now())
-	vp := viewport.New(97, 24)
 	return Model{
 		updateChan:       updateChan,
 		Sismos:           make([]alert.Sismo, 0),
@@ -91,8 +90,10 @@ func NewModel(updateChan <-chan tea.Msg, port string) Model {
 		statusMsg:        "Ready",
 		logScroll:        0,
 		sismoScroll:      0,
+		predictiveScroll: 0,
+		termHeight:       24,
+		termWidth:        97,
 		currentView:      ViewDashboard,
-		viewport:         vp,
 	}
 }
 
@@ -116,26 +117,53 @@ func SubscribeToUpdates(ch <-chan tea.Msg) tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.viewport.Width = msg.Width
-		m.viewport.Height = msg.Height
+		m.termHeight = msg.Height
+		m.termWidth = msg.Width
 		return m, nil
 
 	case tea.KeyMsg:
-		// In predictive view, delegate scrolling keys to viewport;
-		// intercept 'p' to go back and 'q'/'ctrl+c' to quit.
 		if m.currentView == ViewPredictive {
 			switch msg.String() {
 			case "q", "ctrl+c":
 				return m, tea.Quit
 			case "p":
 				m.currentView = ViewDashboard
+				m.predictiveScroll = 0
 				m.statusMsg = "Switched to Main Dashboard"
 				return m, nil
-			default:
-				var cmd tea.Cmd
-				m.viewport, cmd = m.viewport.Update(msg)
-				return m, cmd
+			case "up":
+				m.predictiveScroll++
+				return m, nil
+			case "down":
+				m.predictiveScroll--
+				if m.predictiveScroll < 0 {
+					m.predictiveScroll = 0
+				}
+				return m, nil
+			case "pgup":
+				m.predictiveScroll += 10
+				return m, nil
+			case "pgdown":
+				m.predictiveScroll -= 10
+				if m.predictiveScroll < 0 {
+					m.predictiveScroll = 0
+				}
+				return m, nil
+			case "home":
+				m.predictiveScroll = 0
+				return m, nil
+			case "end":
+				// Calculate bottom position from actual content
+				content := m.renderPredictiveView()
+				totalLines := strings.Count(content, "\n") + 1
+				maxScroll := totalLines - m.termHeight
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				m.predictiveScroll = maxScroll
+				return m, nil
 			}
+			return m, nil
 		}
 
 		switch msg.String() {
@@ -158,7 +186,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, triggerInstabilitySimulation(m.Port)
 		case "p":
 			m.currentView = ViewPredictive
-			m.viewportReady = false
+			m.predictiveScroll = 0
 			m.statusMsg = "Switched to Projections & Crustal Stress Monitor"
 			return m, nil
 		case "up":
@@ -246,7 +274,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Update projections cache
 		m.Projections = alert.ComputeProjections(m.HistoricalSismos, time.Now())
-		m.viewportReady = false
 
 		return m, SubscribeToUpdates(m.updateChan)
 
@@ -343,11 +370,37 @@ func triggerInstabilitySimulation(port string) tea.Cmd {
 // View outputs the textual representation of the dashboard.
 func (m Model) View() string {
 	if m.currentView == ViewPredictive {
-		if !m.viewportReady {
-			m.viewport.SetContent(m.renderPredictiveView())
-			m.viewportReady = true
+		full := m.renderPredictiveView()
+		lines := strings.Split(full, "\n")
+
+		// Clamp scroll: 0 = top of content
+		maxScroll := len(lines) - m.termHeight
+		if maxScroll < 0 {
+			maxScroll = 0
 		}
-		return m.viewport.View()
+		if m.predictiveScroll > maxScroll {
+			m.predictiveScroll = maxScroll
+		}
+		if m.predictiveScroll < 0 {
+			m.predictiveScroll = 0
+		}
+
+		end := m.predictiveScroll + m.termHeight
+		if end > len(lines) {
+			end = len(lines)
+		}
+
+		visible := lines[m.predictiveScroll:end]
+
+		// Scroll indicators
+		if m.predictiveScroll > 0 {
+			visible[0] = "▲ Scroll up for more  " + visible[0]
+		}
+		if end < len(lines) {
+			visible[len(visible)-1] = visible[len(visible)-1] + "  ▼ Scroll down for more"
+		}
+
+		return strings.Join(visible, "\n")
 	}
 
 	var s string
