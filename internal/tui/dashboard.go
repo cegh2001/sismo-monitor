@@ -132,22 +132,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusMsg = "Switched to Main Dashboard"
 				return m, nil
 			case "up":
-				m.predictiveScroll++
-				return m, nil
-			case "down":
 				m.predictiveScroll--
 				if m.predictiveScroll < 0 {
 					m.predictiveScroll = 0
 				}
 				return m, nil
-			case "pgup":
-				m.predictiveScroll += 10
+			case "down":
+				m.predictiveScroll++
 				return m, nil
-			case "pgdown":
+			case "pgup":
 				m.predictiveScroll -= 10
 				if m.predictiveScroll < 0 {
 					m.predictiveScroll = 0
 				}
+				return m, nil
+			case "pgdown":
+				m.predictiveScroll += 10
 				return m, nil
 			case "home":
 				m.predictiveScroll = 0
