@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -59,7 +60,7 @@ func TestUSGSClientParsingAndFiltering(t *testing.T) {
 	defer ts.Close()
 
 	client := NewUSGSClient(ts.URL, nil, nil)
-	events, err := client.Fetch()
+	events, err := client.Fetch(context.Background())
 	if err != nil {
 		t.Fatalf("Fetch failed: %v", err)
 	}
@@ -124,14 +125,14 @@ func TestUSGSClientDeduplication(t *testing.T) {
 	out := make(chan alert.Sismo, 10)
 
 	// First fetch should dispatch the event
-	client.fetchAndDispatch(out)
+	client.fetchAndDispatch(context.Background(), out)
 	if len(out) != 1 {
 		t.Fatalf("Expected 1 event dispatched, got %d", len(out))
 	}
 	_ = <-out
 
 	// Second fetch should deduplicate it
-	client.fetchAndDispatch(out)
+	client.fetchAndDispatch(context.Background(), out)
 	if len(out) != 0 {
 		t.Fatalf("Expected 0 events dispatched (deduplicated), got %d", len(out))
 	}

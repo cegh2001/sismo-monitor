@@ -47,7 +47,7 @@ func (c *FDSNClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 	c.log("%s client starting. URL: %s, Interval: %v", c.sourceName, c.baseURL, c.pollInterval)
 
 	// Fetch immediately
-	c.fetchAndDispatch(out)
+	c.fetchAndDispatch(ctx, out)
 
 	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
@@ -58,7 +58,7 @@ func (c *FDSNClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 			c.log("%s client exiting.", c.sourceName)
 			return
 		case <-ticker.C:
-			c.fetchAndDispatch(out)
+			c.fetchAndDispatch(ctx, out)
 		}
 	}
 }
@@ -76,9 +76,9 @@ func (c *FDSNClient) incrementStats() {
 	c.statsCount++
 }
 
-func (c *FDSNClient) fetchAndDispatch(out chan<- alert.Sismo) {
+func (c *FDSNClient) fetchAndDispatch(ctx context.Context, out chan<- alert.Sismo) {
 	c.incrementStats()
-	events, err := c.Fetch()
+	events, err := c.Fetch(ctx)
 	if err != nil {
 		c.log("%s fetch failed: %v", c.sourceName, err)
 		if c.errNotifier != nil {
@@ -119,7 +119,7 @@ func (c *FDSNClient) fetchAndDispatch(out chan<- alert.Sismo) {
 }
 
 // Fetch queries the FDSN service and parses the response.
-func (c *FDSNClient) Fetch() ([]alert.Sismo, error) {
+func (c *FDSNClient) Fetch(ctx context.Context) ([]alert.Sismo, error) {
 	u, err := url.Parse(c.baseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parsing URL: %w", err)
@@ -137,7 +137,11 @@ func (c *FDSNClient) Fetch() ([]alert.Sismo, error) {
 
 	u.RawQuery = q.Encode()
 
-	resp, err := c.client.Get(u.String())
+	req, err := http.NewRequestWithContext(ctx, "GET", u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s failed: %w", u.String(), err)
 	}

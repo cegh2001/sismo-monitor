@@ -44,7 +44,7 @@ func (c *USGSClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 	c.log("USGS client starting. URL: %s, Interval: %v", c.url, c.pollInterval)
 
 	// Fetch immediately
-	c.fetchAndDispatch(out)
+	c.fetchAndDispatch(ctx, out)
 
 	ticker := time.NewTicker(c.pollInterval)
 	defer ticker.Stop()
@@ -55,7 +55,7 @@ func (c *USGSClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 			c.log("USGS client exiting.")
 			return
 		case <-ticker.C:
-			c.fetchAndDispatch(out)
+			c.fetchAndDispatch(ctx, out)
 		}
 	}
 }
@@ -73,9 +73,9 @@ func (c *USGSClient) incrementStats() {
 	c.statsCount++
 }
 
-func (c *USGSClient) fetchAndDispatch(out chan<- alert.Sismo) {
+func (c *USGSClient) fetchAndDispatch(ctx context.Context, out chan<- alert.Sismo) {
 	c.incrementStats()
-	events, err := c.Fetch()
+	events, err := c.Fetch(ctx)
 	if err != nil {
 		c.log("USGS fetch failed: %v", err)
 		if c.errNotifier != nil {
@@ -116,8 +116,12 @@ func (c *USGSClient) fetchAndDispatch(out chan<- alert.Sismo) {
 }
 
 // Fetch requests the USGS GeoJSON and filters/maps it.
-func (c *USGSClient) Fetch() ([]alert.Sismo, error) {
-	resp, err := c.client.Get(c.url)
+func (c *USGSClient) Fetch(ctx context.Context) ([]alert.Sismo, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", c.url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s failed: %w", c.url, err)
 	}

@@ -45,7 +45,7 @@ func (s *FunvisisScraper) Start(ctx context.Context, out chan<- alert.Sismo) {
 	s.log("Funvisis scraper starting. Interval: %v", s.pollInterval)
 
 	// First scrape immediately
-	s.scrapeAndDispatch(out)
+	s.scrapeAndDispatch(ctx, out)
 
 	ticker := time.NewTicker(s.pollInterval)
 	defer ticker.Stop()
@@ -56,13 +56,13 @@ func (s *FunvisisScraper) Start(ctx context.Context, out chan<- alert.Sismo) {
 			s.log("Funvisis scraper exiting.")
 			return
 		case <-ticker.C:
-			s.scrapeAndDispatch(out)
+			s.scrapeAndDispatch(ctx, out)
 		}
 	}
 }
 
-func (s *FunvisisScraper) scrapeAndDispatch(out chan<- alert.Sismo) {
-	events, err := s.Scrape()
+func (s *FunvisisScraper) scrapeAndDispatch(ctx context.Context, out chan<- alert.Sismo) {
+	events, err := s.Scrape(ctx)
 	if err != nil {
 		s.log("Funvisis scrape failed: %v", err)
 		if s.errNotifier != nil {
@@ -107,8 +107,12 @@ func (s *FunvisisScraper) scrapeAndDispatch(out chan<- alert.Sismo) {
 }
 
 // Scrape performs the HTTP request and parses the HTML or JSON body.
-func (s *FunvisisScraper) Scrape() ([]alert.Sismo, error) {
-	resp, err := s.client.Get(s.url)
+func (s *FunvisisScraper) Scrape(ctx context.Context) ([]alert.Sismo, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", s.url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	resp, err := s.client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("GET %s failed: %w", s.url, err)
 	}
