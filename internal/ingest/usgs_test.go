@@ -125,14 +125,14 @@ func TestUSGSClientDeduplication(t *testing.T) {
 	out := make(chan alert.Sismo, 10)
 
 	// First fetch should dispatch the event
-	client.fetchAndDispatch(context.Background(), out)
+	_ = client.fetchAndDispatch(context.Background(), out)
 	if len(out) != 1 {
 		t.Fatalf("Expected 1 event dispatched, got %d", len(out))
 	}
 	_ = <-out
 
 	// Second fetch should deduplicate it
-	client.fetchAndDispatch(context.Background(), out)
+	_ = client.fetchAndDispatch(context.Background(), out)
 	if len(out) != 0 {
 		t.Fatalf("Expected 0 events dispatched (deduplicated), got %d", len(out))
 	}

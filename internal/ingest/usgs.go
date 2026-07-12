@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"sort"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"sismo-monitor/internal/alert"
 	"sismo-monitor/internal/geo"
+	"sismo-monitor/internal/log"
 	"sismo-monitor/internal/models"
 )
 
@@ -39,23 +41,37 @@ func NewUSGSClient(url string, logger func(string, ...interface{}), errNotifier 
 	}
 }
 
-// Start runs the polling loop.
+// Start runs the polling loop with exponential backoff on fetch failures.
 func (c *USGSClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 	c.log("USGS client starting. URL: %s, Interval: %v", c.url, c.pollInterval)
 
-	// Fetch immediately
-	c.fetchAndDispatch(ctx, out)
-
-	ticker := time.NewTicker(c.pollInterval)
-	defer ticker.Stop()
+	backoff := c.pollInterval
+	const maxBackoff = 5 * time.Minute
 
 	for {
 		select {
 		case <-ctx.Done():
 			c.log("USGS client exiting.")
 			return
-		case <-ticker.C:
-			c.fetchAndDispatch(ctx, out)
+		default:
+		}
+
+		err := c.fetchAndDispatch(ctx, out)
+		if err != nil {
+			c.log("USGS fetch failed: %v. Backing off %v...", err, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = time.Duration(math.Min(float64(backoff*2), float64(maxBackoff)))
+		} else {
+			backoff = c.pollInterval // reset on success
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
 		}
 	}
 }
@@ -73,15 +89,14 @@ func (c *USGSClient) incrementStats() {
 	c.statsCount++
 }
 
-func (c *USGSClient) fetchAndDispatch(ctx context.Context, out chan<- alert.Sismo) {
+func (c *USGSClient) fetchAndDispatch(ctx context.Context, out chan<- alert.Sismo) error {
 	c.incrementStats()
 	events, err := c.Fetch(ctx)
 	if err != nil {
-		c.log("USGS fetch failed: %v", err)
 		if c.errNotifier != nil {
 			c.errNotifier(err)
 		}
-		return
+		return err
 	}
 
 	c.mu.Lock()
@@ -113,6 +128,7 @@ func (c *USGSClient) fetchAndDispatch(ctx context.Context, out chan<- alert.Sism
 		default:
 		}
 	}
+	return nil
 }
 
 // Fetch requests the USGS GeoJSON and filters/maps it.
@@ -175,7 +191,5 @@ func (c *USGSClient) Fetch(ctx context.Context) ([]alert.Sismo, error) {
 }
 
 func (c *USGSClient) log(format string, args ...interface{}) {
-	if c.logger != nil {
-		c.logger(format, args...)
-	}
+	log.Log(c.logger, format, args...)
 }

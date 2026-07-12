@@ -16,6 +16,7 @@ import (
 	"github.com/chromedp/chromedp"
 	"sismo-monitor/internal/alert"
 	"sismo-monitor/internal/geo"
+	"sismo-monitor/internal/log"
 )
 
 // Circuit breaker states.
@@ -440,9 +441,7 @@ func (s *SGCScraper) resetCircuitBreaker() {
 }
 
 func (s *SGCScraper) log(format string, args ...interface{}) {
-	if s.logger != nil {
-		s.logger(format, args...)
-	}
+	log.Log(s.logger, format, args...)
 }
 
 // Helper to parse nearby municipalities list to a specific location string.

@@ -9,6 +9,7 @@ import (
 	"github.com/gorilla/websocket"
 	"sismo-monitor/internal/alert"
 	"sismo-monitor/internal/geo"
+	"sismo-monitor/internal/log"
 )
 
 // EMSCClient handles real-time ingestion from the EMSC WebSocket feed.
@@ -109,9 +110,7 @@ func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 }
 
 func (c *EMSCClient) log(format string, args ...interface{}) {
-	if c.logger != nil {
-		c.logger(format, args...)
-	}
+	log.Log(c.logger, format, args...)
 }
 
 type alertMessage struct {

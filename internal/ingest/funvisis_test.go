@@ -186,14 +186,14 @@ func TestFunvisisDeduplication(t *testing.T) {
 	out := make(chan alert.Sismo, 10)
 
 	// First scrape should dispatch the event
-	scraper.scrapeAndDispatch(context.Background(), out)
+	_ = scraper.scrapeAndDispatch(context.Background(), out)
 	if len(out) != 1 {
 		t.Fatalf("Expected 1 event on first scrape, got %d", len(out))
 	}
 	ev1 := <-out
 
 	// Second scrape should NOT dispatch any event (since it's a duplicate)
-	scraper.scrapeAndDispatch(context.Background(), out)
+	_ = scraper.scrapeAndDispatch(context.Background(), out)
 	if len(out) != 0 {
 		t.Fatalf("Expected 0 events on second scrape (deduplicated), got %d", len(out))
 	}
@@ -251,7 +251,7 @@ func TestFunvisisDeduplication(t *testing.T) {
 	})
 
 	// Third scrape should only dispatch the new event
-	scraper.scrapeAndDispatch(context.Background(), out)
+	_ = scraper.scrapeAndDispatch(context.Background(), out)
 	if len(out) != 1 {
 		t.Fatalf("Expected 1 new event on third scrape, got %d", len(out))
 	}
@@ -319,7 +319,7 @@ func TestFunvisisSorting(t *testing.T) {
 
 	out := make(chan alert.Sismo, 10)
 
-	scraper.scrapeAndDispatch(context.Background(), out)
+	_ = scraper.scrapeAndDispatch(context.Background(), out)
 	if len(out) != 3 {
 		t.Fatalf("Expected 3 events dispatched, got %d", len(out))
 	}

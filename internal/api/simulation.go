@@ -11,6 +11,7 @@ import (
 
 	"sismo-monitor/internal/alert"
 	"sismo-monitor/internal/geo"
+	"sismo-monitor/internal/log"
 )
 
 // SimulationServer exposes an HTTP endpoint to inject mock seismic events.
@@ -189,7 +190,5 @@ func (s *SimulationServer) handleTestAlert(w http.ResponseWriter, r *http.Reques
 }
 
 func (s *SimulationServer) log(format string, args ...interface{}) {
-	if s.logger != nil {
-		s.logger(format, args...)
-	}
+	log.Log(s.logger, format, args...)
 }

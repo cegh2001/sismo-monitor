@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"sort"
@@ -16,6 +17,7 @@ import (
 
 	"sismo-monitor/internal/alert"
 	"sismo-monitor/internal/geo"
+	"sismo-monitor/internal/log"
 )
 
 // FunvisisScraper polls the Funvisis website, scraping and parsing recent seismic events.
@@ -40,35 +42,48 @@ func NewFunvisisScraper(logger func(string, ...interface{}), errNotifier func(er
 	}
 }
 
-// Start starts the polling loop, scraping Funvisis at regular intervals.
+// Start runs the polling loop with exponential backoff on scrape failures.
 func (s *FunvisisScraper) Start(ctx context.Context, out chan<- alert.Sismo) {
 	s.log("Funvisis scraper starting. Interval: %v", s.pollInterval)
 
-	// First scrape immediately
-	s.scrapeAndDispatch(ctx, out)
-
-	ticker := time.NewTicker(s.pollInterval)
-	defer ticker.Stop()
+	backoff := s.pollInterval
+	const maxBackoff = 10 * time.Minute
 
 	for {
 		select {
 		case <-ctx.Done():
 			s.log("Funvisis scraper exiting.")
 			return
-		case <-ticker.C:
-			s.scrapeAndDispatch(ctx, out)
+		default:
+		}
+
+		err := s.scrapeAndDispatch(ctx, out)
+		if err != nil {
+			s.log("Funvisis scrape failed: %v. Backing off %v...", err, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = time.Duration(math.Min(float64(backoff*2), float64(maxBackoff)))
+		} else {
+			backoff = s.pollInterval // reset on success
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
 		}
 	}
 }
 
-func (s *FunvisisScraper) scrapeAndDispatch(ctx context.Context, out chan<- alert.Sismo) {
+func (s *FunvisisScraper) scrapeAndDispatch(ctx context.Context, out chan<- alert.Sismo) error {
 	events, err := s.Scrape(ctx)
 	if err != nil {
-		s.log("Funvisis scrape failed: %v", err)
 		if s.errNotifier != nil {
 			s.errNotifier(err)
 		}
-		return
+		return err
 	}
 
 	if s.seenEvents == nil {
@@ -104,6 +119,7 @@ func (s *FunvisisScraper) scrapeAndDispatch(ctx context.Context, out chan<- aler
 		default:
 		}
 	}
+	return nil
 }
 
 // Scrape performs the HTTP request and parses the HTML or JSON body.
@@ -293,9 +309,7 @@ func (s *FunvisisScraper) parseRowData(dateStr, timeStr, latStr, lonStr, depthSt
 }
 
 func (s *FunvisisScraper) log(format string, args ...interface{}) {
-	if s.logger != nil {
-		s.logger(format, args...)
-	}
+	log.Log(s.logger, format, args...)
 }
 
 type FunvisisGeoJSON struct {

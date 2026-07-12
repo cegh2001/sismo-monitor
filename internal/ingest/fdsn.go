@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"sort"
@@ -14,6 +15,7 @@ import (
 
 	"sismo-monitor/internal/alert"
 	"sismo-monitor/internal/geo"
+	"sismo-monitor/internal/log"
 )
 
 // FDSNClient handles ingestion from FDSN Web Service event query endpoints.
@@ -42,23 +44,37 @@ func NewFDSNClient(sourceName string, baseURL string, pollInterval time.Duration
 	}
 }
 
-// Start runs the polling loop.
+// Start runs the polling loop with exponential backoff on fetch failures.
 func (c *FDSNClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 	c.log("%s client starting. URL: %s, Interval: %v", c.sourceName, c.baseURL, c.pollInterval)
 
-	// Fetch immediately
-	c.fetchAndDispatch(ctx, out)
-
-	ticker := time.NewTicker(c.pollInterval)
-	defer ticker.Stop()
+	backoff := c.pollInterval
+	const maxBackoff = 5 * time.Minute
 
 	for {
 		select {
 		case <-ctx.Done():
 			c.log("%s client exiting.", c.sourceName)
 			return
-		case <-ticker.C:
-			c.fetchAndDispatch(ctx, out)
+		default:
+		}
+
+		err := c.fetchAndDispatch(ctx, out)
+		if err != nil {
+			c.log("%s fetch failed: %v. Backing off %v...", c.sourceName, err, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff = time.Duration(math.Min(float64(backoff*2), float64(maxBackoff)))
+		} else {
+			backoff = c.pollInterval // reset on success
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
 		}
 	}
 }
@@ -76,15 +92,14 @@ func (c *FDSNClient) incrementStats() {
 	c.statsCount++
 }
 
-func (c *FDSNClient) fetchAndDispatch(ctx context.Context, out chan<- alert.Sismo) {
+func (c *FDSNClient) fetchAndDispatch(ctx context.Context, out chan<- alert.Sismo) error {
 	c.incrementStats()
 	events, err := c.Fetch(ctx)
 	if err != nil {
-		c.log("%s fetch failed: %v", c.sourceName, err)
 		if c.errNotifier != nil {
 			c.errNotifier(err)
 		}
-		return
+		return err
 	}
 
 	c.mu.Lock()
@@ -116,6 +131,7 @@ func (c *FDSNClient) fetchAndDispatch(ctx context.Context, out chan<- alert.Sism
 		default:
 		}
 	}
+	return nil
 }
 
 // Fetch queries the FDSN service and parses the response.
@@ -240,9 +256,7 @@ func (c *FDSNClient) ParseXML(r io.Reader) ([]alert.Sismo, error) {
 }
 
 func (c *FDSNClient) log(format string, args ...interface{}) {
-	if c.logger != nil {
-		c.logger(format, args...)
-	}
+	log.Log(c.logger, format, args...)
 }
 
 // QuakeML and related structs for XML parsing.
