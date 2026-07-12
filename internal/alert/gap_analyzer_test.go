@@ -255,3 +255,74 @@ func TestGapAnalyzerBackgroundWriterCoalesce(t *testing.T) {
 	}
 }
 
+func TestGapAnalyzerPurgeSimulationEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "sismos_historicos.json")
+
+	analyzer := NewGapAnalyzer(dbPath)
+
+	now := time.Now()
+
+	// Seed with a mix of real and simulation events
+	realSismos := []Sismo{
+		{ID: "real-1", Source: "USGS", Magnitude: 3.0, Latitude: 10.0, Longitude: -67.0, Time: now.AddDate(0, -6, 0), GridCell: "G_0_0"},
+		{ID: "real-2", Source: "EMSC", Magnitude: 3.5, Latitude: 10.0, Longitude: -67.0, Time: now.AddDate(0, -5, 0), GridCell: "G_0_0"},
+		{ID: "real-3", Source: "Funvisis", Magnitude: 2.8, Latitude: 10.0, Longitude: -67.0, Time: now.AddDate(0, -4, 0), GridCell: "G_0_0"},
+		{ID: "real-4", Source: "USGS", Magnitude: 4.0, Latitude: 10.5, Longitude: -66.0, Time: now.AddDate(0, -3, 0), GridCell: "G_1_1"},
+	}
+	simSismos := []Sismo{
+		{ID: "sim-1", Source: "Simulation", Magnitude: 2.5, Latitude: 10.0, Longitude: -67.0, Time: now.Add(-1 * time.Hour), GridCell: "G_0_0"},
+		{ID: "sim-2", Source: "Simulation", Magnitude: 3.0, Latitude: 10.0, Longitude: -67.0, Time: now.Add(-30 * time.Minute), GridCell: "G_0_0"},
+		{ID: "sim-3", Source: "Simulation", Magnitude: 2.0, Latitude: 10.5, Longitude: -66.0, Time: now.Add(-15 * time.Minute), GridCell: "G_1_1"},
+	}
+
+	all := append(append([]Sismo{}, realSismos...), simSismos...)
+	analyzer.SetSismos(all)
+
+	// Verify preconditions: all 7 events are present
+	if len(analyzer.sismos) != 7 {
+		t.Fatalf("Expected 7 sismos before purge, got %d", len(analyzer.sismos))
+	}
+
+	// Verify G_0_0 cell exists with all events (3 real + 2 sim = 5)
+	cellSismos := analyzer.cellSismosMap["G_0_0"]
+	if len(cellSismos) != 5 {
+		t.Fatalf("Expected 5 sismos in G_0_0 before purge, got %d", len(cellSismos))
+	}
+
+	// Purge
+	analyzer.PurgeSimulationEvents()
+
+	// Verify only real sismos remain (4 total)
+	if len(analyzer.sismos) != 4 {
+		t.Errorf("Expected 4 sismos after purge, got %d", len(analyzer.sismos))
+	}
+
+	// Verify all remaining sismos are non-simulation
+	for _, s := range analyzer.sismos {
+		if s.Source == "Simulation" {
+			t.Errorf("Found simulation event %q still present after purge", s.ID)
+		}
+	}
+
+	// Verify G_0_0 cell now has only 3 events (the 3 real ones)
+	cellSismos = analyzer.cellSismosMap["G_0_0"]
+	if len(cellSismos) != 3 {
+		t.Errorf("Expected 3 sismos in G_0_0 after purge, got %d", len(cellSismos))
+	}
+
+	// Verify G_1_1 cell now has only 1 event
+	cellSismos = analyzer.cellSismosMap["G_1_1"]
+	if len(cellSismos) != 1 {
+		t.Errorf("Expected 1 sismo in G_1_1 after purge, got %d", len(cellSismos))
+	}
+
+	// Verify sismosMap is rebuilt: real IDs must exist, sim IDs must not
+	if _, found := analyzer.sismosMap["real-1"]; !found {
+		t.Error("Expected real-1 to exist in sismosMap after purge")
+	}
+	if _, found := analyzer.sismosMap["sim-1"]; found {
+		t.Error("Expected sim-1 to be removed from sismosMap after purge")
+	}
+}
+
