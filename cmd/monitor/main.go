@@ -109,6 +109,12 @@ func main() {
 	})
 	go geofonClient.Start(ctx, eventChan)
 
+	// Start USGS FDSN regional client (replaces decommissioned SGC + IRIS endpoints)
+	usgsFDSNClient := ingest.NewFDSNClient("USGS FDSN", "https://earthquake.usgs.gov/fdsnws/event/1/query", 60*time.Second, tuiLog, func(err error) {
+		tuiLog("USGS FDSN client warning: %v", err)
+	})
+	go usgsFDSNClient.Start(ctx, eventChan)
+
 	// Start HTTP API Simulation server
 	simServer := api.NewSimulationServer(cfg.Port, eventChan, gapAnalyzer, tuiLog)
 	go func() {
@@ -158,6 +164,8 @@ func main() {
 						stats.FunvisisCount++
 					case "USGS":
 						stats.USGSEvents++
+					case "USGS FDSN":
+						stats.SgcEvents++ // Regional FDSN (replaces decommissioned SGC + IRIS)
 					case "Simulation":
 						stats.SimEvents++
 					}

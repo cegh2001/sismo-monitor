@@ -36,6 +36,8 @@ type MsgStats struct {
 	EmscEvents       int
 	FunvisisCount    int
 	USGSEvents       int
+	SgcEvents        int
+	IrisEvents       int
 	SimEvents        int
 	InfoCount        int
 	PreAlertCount    int
@@ -411,12 +413,12 @@ func (m Model) View() string {
 	s += fmt.Sprintf("  ACTION: %s\n", m.statusMsg)
 	s += singleDivider
 	s += "  STATISTICS:\n"
-	s += fmt.Sprintf("  Total Events: %-3d | Local (<300km): %-3d | EMSC: %-3d | Funvisis: %-3d | USGS: %-3d | Sim: %-3d\n",
-		m.Stats.TotalEvents, m.Stats.LocalEvents, m.Stats.EmscEvents, m.Stats.FunvisisCount, m.Stats.USGSEvents, m.Stats.SimEvents)
-	s += fmt.Sprintf("  Threat Levels: Info: %-3d | Pre-Alert: %-3d | Critical: %-3d | Swarm: %-3d | Instability: %-3d\n",
-		m.Stats.InfoCount, m.Stats.PreAlertCount, m.Stats.CriticalCount, m.Stats.SwarmCount, m.Stats.InstabilityCount)
-	s += fmt.Sprintf("  USGS Polls: %-3d | Active Gaps (Lock Segments): %-3d | Swarm Queue: %-3d\n",
-		m.Stats.USGSPolls, m.Stats.ActiveGaps, m.Stats.SwarmQueueLen)
+	s += fmt.Sprintf("  Total: %-3d | Local: %-3d | Swarms: %-2d | Instab: %-2d | Active Gaps: %-2d | SwarmQ: %-2d\n",
+		m.Stats.TotalEvents, m.Stats.LocalEvents, m.Stats.SwarmCount, m.Stats.InstabilityCount, m.Stats.ActiveGaps, m.Stats.SwarmQueueLen)
+	s += fmt.Sprintf("  Sources: EMSC:%-3d | Funvisis:%-3d | USGS:%-3d | USGS_FDSN:%-3d | Sim:%-3d\n",
+		m.Stats.EmscEvents, m.Stats.FunvisisCount, m.Stats.USGSEvents, m.Stats.SgcEvents, m.Stats.SimEvents)
+	s += fmt.Sprintf("  Threat Levels: Info:%-3d | Pre-Alert:%-3d | Critical:%-3d | USGS Polls:%-3d\n",
+		m.Stats.InfoCount, m.Stats.PreAlertCount, m.Stats.CriticalCount, m.Stats.USGSPolls)
 	s += singleDivider
 	s += "  LATEST SEISMIC EVENTS (Use Left/Right Arrows to scroll):\n"
 	s += fmt.Sprintf("  %-10s  %-8s  %-6s  %-8s  %-8s  %-45s\n", "Source", "Time", "Mag", "Depth", "Distance", "Location")

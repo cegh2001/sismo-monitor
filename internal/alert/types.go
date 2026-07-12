@@ -18,6 +18,32 @@ type Sismo struct {
 	GridCell  string    `json:"grid_cell"`
 }
 
+// PWaveTravelTime returns the estimated travel time of the P-wave to La Guaira.
+func (s Sismo) PWaveTravelTime() time.Duration {
+	if s.Distance <= 0 {
+		return 0
+	}
+	return time.Duration(s.Distance / 6.0 * float64(time.Second))
+}
+
+// SWaveTravelTime returns the estimated travel time of the S-wave to La Guaira.
+func (s Sismo) SWaveTravelTime() time.Duration {
+	if s.Distance <= 0 {
+		return 0
+	}
+	return time.Duration(s.Distance / 3.5 * float64(time.Second))
+}
+
+// PWaveArrivalTime returns the estimated arrival time of the P-wave at La Guaira.
+func (s Sismo) PWaveArrivalTime() time.Time {
+	return s.Time.Add(s.PWaveTravelTime())
+}
+
+// SWaveArrivalTime returns the estimated arrival time of the S-wave at La Guaira.
+func (s Sismo) SWaveArrivalTime() time.Time {
+	return s.Time.Add(s.SWaveTravelTime())
+}
+
 // AlertLevel represents the danger classification of a seismic alert.
 type AlertLevel string
 

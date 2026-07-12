@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -96,10 +97,31 @@ func (n *PushoverNotifier) Start(ctx context.Context) {
 }
 
 func (n *PushoverNotifier) send(alert Alert) error {
+	var etaText string
+	if alert.Sismo.Distance > 0 {
+		now := time.Now()
+		pArrival := alert.Sismo.PWaveArrivalTime()
+		sArrival := alert.Sismo.SWaveArrivalTime()
+
+		pStr := "ya llegó"
+		if pArrival.After(now) {
+			pStr = fmt.Sprintf("en %ds", int(pArrival.Sub(now).Seconds()))
+		}
+		sStr := "ya llegó"
+		if sArrival.After(now) {
+			sStr = fmt.Sprintf("en %ds", int(sArrival.Sub(now).Seconds()))
+		}
+		etaText = fmt.Sprintf("\n[EEW] ETA Onda P: %s | ETA Onda S: %s", pStr, sStr)
+	}
+
 	if n.appToken == "" || n.userKey == "" {
 		if n.logger != nil {
-			n.logger("[MOCK PUSHOVER ALERT] Level: %s | Mag: %.1f | Location: %s | Dist: %.1fkm (Credentials missing, notification skipped)",
-				alert.Level, alert.Sismo.Magnitude, alert.Sismo.Location, alert.Sismo.Distance)
+			var etas string
+			if alert.Sismo.Distance > 0 {
+				etas = etaText
+			}
+			n.logger("[MOCK PUSHOVER ALERT] Level: %s | Mag: %.1f | Location: %s | Dist: %.1fkm%s (Credentials missing, notification skipped)",
+				alert.Level, alert.Sismo.Magnitude, alert.Sismo.Location, alert.Sismo.Distance, strings.ReplaceAll(etas, "\n", " | "))
 		}
 		return nil
 	}
@@ -110,23 +132,25 @@ func (n *PushoverNotifier) send(alert Alert) error {
 
 	if alert.Level == LevelInstability {
 		title = "Alerta Especial: Inestabilidad Cortical"
-		message = fmt.Sprintf("Alerta Especial: Actividad sísmica detectada en segmento previamente bloqueado. Posible deslizamiento acelerado en desarrollo (Falla de San Sebastián/Boconó, cuadrante %s).\n\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s",
+		message = fmt.Sprintf("Alerta Especial: Actividad sísmica detectada en segmento previamente bloqueado. Posible deslizamiento acelerado en desarrollo (Falla de San Sebastián/Boconó, cuadrante %s).\n\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s%s",
 			alert.Sismo.GridCell,
 			alert.Sismo.Magnitude,
 			alert.Sismo.Depth,
 			alert.Sismo.Distance,
 			alert.Sismo.Location,
 			alert.Sismo.Time.Format("2006-01-02 15:04:05"),
+			etaText,
 		)
 	} else {
 		title = fmt.Sprintf("Seismic Alert Venezuelan Region: %s", alert.Level)
-		message = fmt.Sprintf("Level: %s\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s",
+		message = fmt.Sprintf("Level: %s\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s%s",
 			alert.Level,
 			alert.Sismo.Magnitude,
 			alert.Sismo.Depth,
 			alert.Sismo.Distance,
 			alert.Sismo.Location,
 			alert.Sismo.Time.Format("2006-01-02 15:04:05"),
+			etaText,
 		)
 	}
 
