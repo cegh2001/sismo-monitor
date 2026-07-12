@@ -91,6 +91,10 @@ func main() {
 	funvisisScraper := ingest.NewFunvisisScraper(tuiLog, funvisisErrHandler)
 	go funvisisScraper.Start(ctx, eventChan)
 
+	// Start SGC Colombia headless browser scraper (chromedp)
+	sgcScraper := ingest.NewSGCScraper(tuiLog)
+	go sgcScraper.Start(ctx, eventChan)
+
 	// Start USGS real-time client
 	usgsClient := ingest.NewUSGSClient(cfg.USGSRealtimeURL, tuiLog, func(err error) {
 		tuiLog("USGS client warning: %v", err)
@@ -164,8 +168,10 @@ func main() {
 						stats.FunvisisCount++
 					case "USGS":
 						stats.USGSEvents++
-					case "USGS FDSN":
-						stats.SgcEvents++ // Regional FDSN (replaces decommissioned SGC + IRIS)
+				case "USGS FDSN":
+					stats.SgcEvents++ // Regional FDSN (replaces decommissioned IRIS)
+				case "SGC":
+					stats.IrisEvents++ // SGC Colombia headless scraper
 					case "Simulation":
 						stats.SimEvents++
 					}

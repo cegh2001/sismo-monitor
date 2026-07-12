@@ -415,8 +415,8 @@ func (m Model) View() string {
 	s += "  STATISTICS:\n"
 	s += fmt.Sprintf("  Total: %-3d | Local: %-3d | Swarms: %-2d | Instab: %-2d | Active Gaps: %-2d | SwarmQ: %-2d\n",
 		m.Stats.TotalEvents, m.Stats.LocalEvents, m.Stats.SwarmCount, m.Stats.InstabilityCount, m.Stats.ActiveGaps, m.Stats.SwarmQueueLen)
-	s += fmt.Sprintf("  Sources: EMSC:%-3d | Funvisis:%-3d | USGS:%-3d | USGS_FDSN:%-3d | Sim:%-3d\n",
-		m.Stats.EmscEvents, m.Stats.FunvisisCount, m.Stats.USGSEvents, m.Stats.SgcEvents, m.Stats.SimEvents)
+	s += fmt.Sprintf("  Sources: EMSC:%-3d | Funvisis:%-3d | USGS:%-3d | USGS_FDSN:%-3d | SGC:%-3d | Sim:%-3d\n",
+		m.Stats.EmscEvents, m.Stats.FunvisisCount, m.Stats.USGSEvents, m.Stats.SgcEvents, m.Stats.IrisEvents, m.Stats.SimEvents)
 	s += fmt.Sprintf("  Threat Levels: Info:%-3d | Pre-Alert:%-3d | Critical:%-3d | USGS Polls:%-3d\n",
 		m.Stats.InfoCount, m.Stats.PreAlertCount, m.Stats.CriticalCount, m.Stats.USGSPolls)
 	s += singleDivider
