@@ -46,6 +46,7 @@ func main() {
 
 	// Initialize Deduplicator
 	deduplicator := alert.NewDeduplicator(120*time.Second, 50.0)
+	go deduplicator.StartCleanup(ctx)
 
 	// Start rate-limited notification loop
 	go notifier.Start(ctx)

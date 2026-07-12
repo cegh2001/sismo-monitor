@@ -22,7 +22,7 @@ func TestEMSCMessageMapping(t *testing.T) {
 		"data": {
 			"type": "Feature",
 			"properties": {
-				"unid": "emsc-event-99",
+				"unid": "20260710abc",
 				"time": "2026-07-10T16:20:00.0Z",
 				"mag": 5.8,
 				"depth": 25.0,
@@ -44,8 +44,8 @@ func TestEMSCMessageMapping(t *testing.T) {
 
 	sismo := client.mapMessageToSismo(msg)
 
-	if sismo.ID != "emsc-event-99" {
-		t.Errorf("Expected ID 'emsc-event-99', got %q", sismo.ID)
+	if sismo.ID != "emsc-20260710abc" {
+		t.Errorf("Expected ID 'emsc-20260710abc', got %q", sismo.ID)
 	}
 	if sismo.Source != "EMSC" {
 		t.Errorf("Expected Source 'EMSC', got %q", sismo.Source)
@@ -125,7 +125,7 @@ func TestEMSCOutOfBoundsFiltering(t *testing.T) {
 			"action": "create",
 			"data": {
 				"properties": {
-					"unid": "emsc-in-bounds",
+					"unid": "20260710xyz",
 					"time": "2026-07-10T16:20:00.0Z",
 					"mag": 4.5,
 					"depth": 10.0,
@@ -140,7 +140,7 @@ func TestEMSCOutOfBoundsFiltering(t *testing.T) {
 			"action": "create",
 			"data": {
 				"properties": {
-					"unid": "emsc-out-bounds",
+					"unid": "20260710out",
 					"time": "2026-07-10T16:22:00.0Z",
 					"mag": 6.2,
 					"depth": 15.0,
@@ -181,7 +181,7 @@ func TestEMSCOutOfBoundsFiltering(t *testing.T) {
 	}
 
 	ev := <-out
-	if ev.ID != "emsc-in-bounds" {
-		t.Errorf("Expected event ID 'emsc-in-bounds', got %q", ev.ID)
+	if ev.ID != "emsc-20260710xyz" {
+		t.Errorf("Expected event ID 'emsc-20260710xyz', got %q", ev.ID)
 	}
 }

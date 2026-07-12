@@ -1,12 +1,30 @@
 package alert
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"time"
 
 	"sismo-monitor/internal/geo"
 )
+
+// sourcePriority tracks which sources are preferred for magnitude data.
+var magnitudeSources = map[string]bool{
+	"USGS": true,
+	"EMSC": true,
+}
+
+// sourceHasAny returns true if src contains any of the target sources
+// (accounting for fused "+" separators).
+func sourceHasAny(src string, targets map[string]bool) bool {
+	for _, part := range strings.Split(src, "+") {
+		if targets[part] {
+			return true
+		}
+	}
+	return false
+}
 
 // Deduplicator manages sliding window space-time deduplication of seismic events.
 type Deduplicator struct {
@@ -83,6 +101,33 @@ func (d *Deduplicator) GetRecentEvents() []Sismo {
 	return res
 }
 
+// StartCleanup runs a background goroutine that periodically prunes stale events
+// from the recentEvents buffer. This prevents memory accumulation when no new
+// events arrive for extended periods.
+func (d *Deduplicator) StartCleanup(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.mu.Lock()
+			cutoff := time.Now().Add(-10 * time.Minute)
+			n := 0
+			for _, ev := range d.recentEvents {
+				if ev.Time.After(cutoff) {
+					d.recentEvents[n] = ev
+					n++
+				}
+			}
+			d.recentEvents = d.recentEvents[:n]
+			d.mu.Unlock()
+		}
+	}
+}
+
 // fuse merges prev (already processed) and curr (newly arrived) Sismo.
 // It prioritizes Funvisis for location/depth and USGS/EMSC for magnitude.
 func (d *Deduplicator) fuse(prev, curr Sismo) Sismo {
@@ -98,22 +143,13 @@ func (d *Deduplicator) fuse(prev, curr Sismo) Sismo {
 		fused.GridCell = curr.GridCell
 	}
 
-	// 2. Magnitude: Prefer USGS or EMSC
-	isUSGSEMSC := func(src string) bool {
-		// Split by + in case they are already combined/fused
-		parts := strings.Split(src, "+")
-		for _, p := range parts {
-			if p == "USGS" || p == "EMSC" {
-				return true
-			}
-		}
-		return false
-	}
+	// 2. Magnitude: Prefer global sources (USGS, EMSC)
+	currHasMag := sourceHasAny(curr.Source, magnitudeSources)
+	prevHasMag := sourceHasAny(prev.Source, magnitudeSources)
 
-	if isUSGSEMSC(curr.Source) && !isUSGSEMSC(prev.Source) {
+	if currHasMag && !prevHasMag {
 		fused.Magnitude = curr.Magnitude
-	} else if isUSGSEMSC(curr.Source) && isUSGSEMSC(prev.Source) {
-		// If both have global sources, prefer USGS if the new one is USGS
+	} else if currHasMag && prevHasMag {
 		if curr.Source == "USGS" {
 			fused.Magnitude = curr.Magnitude
 		}

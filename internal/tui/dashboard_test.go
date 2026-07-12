@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -331,4 +332,136 @@ func TestModelUpdate(t *testing.T) {
 			t.Errorf("Expected updated MainshockMag 5.5, got %.1f", projAfter.MainshockMag)
 		}
 	})
+}
+
+func TestViewDashboard(t *testing.T) {
+	updateChan := make(chan tea.Msg, 10)
+	m := NewModel(updateChan, "8080")
+
+	view := m.View()
+
+	// Verify dashboard view contains expected sections
+	if !strings.Contains(view, "VENEZUELAN SEISMIC MONITOR") {
+		t.Error("Dashboard view should contain title")
+	}
+	if !strings.Contains(view, "STATISTICS") {
+		t.Error("Dashboard view should contain STATISTICS section")
+	}
+	if !strings.Contains(view, "LATEST SEISMIC EVENTS") {
+		t.Error("Dashboard view should contain LATEST SEISMIC EVENTS section")
+	}
+	if !strings.Contains(view, "LATEST SYSTEM LOGS") {
+		t.Error("Dashboard view should contain LATEST SYSTEM LOGS section")
+	}
+	if !strings.Contains(view, "[q] Quit") {
+		t.Error("Dashboard view should show quit shortcut")
+	}
+}
+
+func TestViewPredictiveEmpty(t *testing.T) {
+	updateChan := make(chan tea.Msg, 10)
+	m := NewModel(updateChan, "8080")
+	m.currentView = ViewPredictive
+
+	view := m.View()
+
+	if !strings.Contains(view, "PROYECCIONES SISMOLÓGICAS") {
+		t.Error("Predictive view should contain title")
+	}
+	if !strings.Contains(view, "No se detecta actividad acumulada") {
+		t.Error("Predictive view with no data should show empty message")
+	}
+}
+
+func TestViewPredictiveWithData(t *testing.T) {
+	updateChan := make(chan tea.Msg, 10)
+	m := NewModel(updateChan, "8080")
+
+	now := time.Now()
+	m.Projections = []alert.FaultProjection{
+		{
+			GridCell:           "G_1_1",
+			FaultName:          "Falla de Boconó",
+			BValue:             0.65,
+			MainshockMag:       5.5,
+			MainshockTime:      now.Add(-5 * time.Hour),
+			BathMaxReplica:     4.3,
+			OmoriReplicaRate:   0.8,
+			ExpectedReplicas24: 3.5,
+			EventCount:         12,
+		},
+		{
+			GridCell:           "G_3_2",
+			FaultName:          "Falla de San Sebastián",
+			BValue:             1.05,
+			MainshockMag:       4.2,
+			MainshockTime:      now.Add(-10 * time.Hour),
+			BathMaxReplica:     3.0,
+			OmoriReplicaRate:   0.3,
+			ExpectedReplicas24: 1.2,
+			EventCount:         8,
+		},
+	}
+	m.currentView = ViewPredictive
+
+	view := m.View()
+
+	if !strings.Contains(view, "FALLA DE BOCONÓ") {
+		t.Error("Predictive view should show Boconó fault section")
+	}
+	if !strings.Contains(view, "FALLA DE SAN SEBASTIÁN") {
+		t.Error("Predictive view should show San Sebastián fault section")
+	}
+	if !strings.Contains(view, "G_1_1") {
+		t.Error("Predictive view should show grid cell G_1_1")
+	}
+	if strings.Contains(view, "No se detecta actividad acumulada") {
+		t.Error("Predictive view with data should NOT show empty message")
+	}
+}
+
+func TestViewToggle(t *testing.T) {
+	updateChan := make(chan tea.Msg, 10)
+	m := NewModel(updateChan, "8080")
+
+	// Default is dashboard
+	if !strings.Contains(m.View(), "VENEZUELAN SEISMIC MONITOR") {
+		t.Error("Default view should be dashboard")
+	}
+
+	// Toggle to predictive via key press
+	res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = res.(Model)
+
+	view := m.View()
+	if !strings.Contains(view, "PROYECCIONES SISMOLÓGICAS") {
+		t.Error("After 'p' key, view should be predictive")
+	}
+
+	// Toggle back
+	res, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	m = res.(Model)
+
+	view = m.View()
+	if !strings.Contains(view, "VENEZUELAN SEISMIC MONITOR") {
+		t.Error("After second 'p' key, view should be dashboard again")
+	}
+}
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"short", "short"},
+		{"this is a very long location string that should be truncated", "this is a very long location string that s..."},
+		{"exactly45chars_________________________!", "exactly45chars_________________________!"},
+	}
+
+	for _, tc := range tests {
+		got := truncate(tc.input, 45)
+		if got != tc.expected {
+			t.Errorf("truncate(%q, 45) = %q, want %q", tc.input, got, tc.expected)
+		}
+	}
 }

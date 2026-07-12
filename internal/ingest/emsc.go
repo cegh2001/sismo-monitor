@@ -158,7 +158,7 @@ func (c *EMSCClient) mapMessageToSismo(msg alertMessage) alert.Sismo {
 	gridCell := geo.GetGridCell(lat, lon)
 
 	return alert.Sismo{
-		ID:        msg.Data.Properties.Unid,
+		ID:        "emsc-" + msg.Data.Properties.Unid,
 		Source:    "EMSC",
 		Magnitude: msg.Data.Properties.Mag,
 		Depth:     msg.Data.Properties.Depth,

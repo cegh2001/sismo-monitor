@@ -47,6 +47,8 @@ type TestAlertPayload struct {
 func (s *SimulationServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/test-alert", s.handleTestAlert)
+	mux.HandleFunc("/health", s.handleHealth)
+	mux.HandleFunc("/ready", s.handleReady)
 
 	server := &http.Server{
 		Addr:    "127.0.0.1:" + s.port,
@@ -187,6 +189,18 @@ func (s *SimulationServer) handleTestAlert(w http.ResponseWriter, r *http.Reques
 		"status": "success",
 		"sismo":  sismo,
 	})
+}
+
+func (s *SimulationServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
+}
+
+func (s *SimulationServer) handleReady(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(`{"status":"ready"}`))
 }
 
 func (s *SimulationServer) log(format string, args ...interface{}) {
