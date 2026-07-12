@@ -16,7 +16,6 @@ import (
 	"github.com/chromedp/chromedp"
 	"sismo-monitor/internal/alert"
 	"sismo-monitor/internal/geo"
-	"sismo-monitor/internal/log"
 )
 
 // Circuit breaker states.
@@ -178,9 +177,18 @@ func (s *SGCScraper) Scrape(ctx context.Context) ([]alert.Sismo, error) {
 		chromedp.WaitVisible(".item-container", chromedp.ByQueryAll),
 		chromedp.Title(&pageTitle),
 		chromedp.ActionFunc(func(ctx context.Context) error {
-			s.log("SGC: page loaded (title: %s), filtering for Venezuela...", pageTitle)
+			s.log("SGC: page loaded (title: %s), zooming out map for regional events...", pageTitle)
 			return nil
 		}),
+		// Zoom out Leaflet map to expand viewport and load regional events
+		chromedp.WaitVisible(".leaflet-control-zoom-out", chromedp.ByQuery),
+		chromedp.Click(".leaflet-control-zoom-out", chromedp.ByQuery),
+		chromedp.Sleep(500*time.Millisecond),
+		chromedp.Click(".leaflet-control-zoom-out", chromedp.ByQuery),
+		chromedp.Sleep(500*time.Millisecond),
+		chromedp.Click(".leaflet-control-zoom-out", chromedp.ByQuery),
+		chromedp.Sleep(1*time.Second), // Let the map reload tiles and events
+
 		// Type "Venezuela" in search input to filter events
 		chromedp.SendKeys(`input[name="textFieldSearchEvents"]`, "Venezuela"),
 		chromedp.Sleep(2*time.Second), // Wait for React filter to apply
@@ -441,7 +449,9 @@ func (s *SGCScraper) resetCircuitBreaker() {
 }
 
 func (s *SGCScraper) log(format string, args ...interface{}) {
-	log.Log(s.logger, format, args...)
+	if s.logger != nil {
+		s.logger(format, args...)
+	}
 }
 
 // Helper to parse nearby municipalities list to a specific location string.
