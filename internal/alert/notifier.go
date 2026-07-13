@@ -152,7 +152,9 @@ func (n *PushoverNotifier) send(alert Alert) error {
 		}
 	} else if alert.Level == LevelInstability {
 		title = "Alerta Especial: Inestabilidad Cortical"
-		message = fmt.Sprintf("Alerta Especial: Actividad sísmica detectada en segmento previamente bloqueado. Posible deslizamiento acelerado en desarrollo (Falla de San Sebastián/Boconó, cuadrante %s).\n\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s%s",
+		faultName := GetFaultName(alert.Sismo.Latitude, alert.Sismo.Longitude)
+		message = fmt.Sprintf("Alerta Especial: Actividad sísmica detectada en segmento previamente bloqueado. Posible deslizamiento acelerado en desarrollo (%s, cuadrante %s).\n\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s%s",
+			faultName,
 			alert.Sismo.GridCell,
 			alert.Sismo.Magnitude,
 			alert.Sismo.Depth,
