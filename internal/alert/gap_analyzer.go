@@ -211,6 +211,23 @@ func (g *GapAnalyzer) GetActiveLockSegments(now time.Time) []string {
 	return locked
 }
 
+// GetAllCells returns the names of every grid cell with at least one stored
+// evento. The result is sorted alphabetically for deterministic iteration.
+// Used by the coordinator to snapshot phase state for the union of locked
+// cells and recently-active cells (the latter may not be "locked" yet still
+// be in ORANGE/RED state from a recent mainshock).
+func (g *GapAnalyzer) GetAllCells() []string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	cells := make([]string, 0, len(g.cellSismosMap))
+	for cell := range g.cellSismosMap {
+		cells = append(cells, cell)
+	}
+	sort.Strings(cells)
+	return cells
+}
+
 // GetCellEvents returns sismos in the given grid cell with Time >= since,
 // in chronological order (oldest first). The result is a fresh slice —
 // callers may freely modify it. If the cell is unknown or the cutoff is in

@@ -159,6 +159,10 @@ func main() {
 	// Statistics state
 	stats := tui.MsgStats{}
 
+	// Gap-phase coordinator: builds per-cell phase snapshots and emits
+	// MsgGapState to the TUI each event cycle.
+	gapCoord := NewCoordinator(gapAnalyzer, notifier, tuiChan, tuiLog)
+
 	// Coordinator processing loop
 	go func() {
 		for {
@@ -221,6 +225,11 @@ func main() {
 				stats.SwarmQueueLen = len(swarmQueue.GetEvents())
 				stats.USGSPolls = usgsClient.GetStatsCount()
 				stats.ActiveGaps = len(gapAnalyzer.GetActiveLockSegments(time.Now()))
+
+				// Build and emit per-cell phase snapshot to the TUI. The
+				// coordinator also dispatches Pushover alerts on phase
+				// transitions (with a 30-minute per-cell cooldown).
+				gapCoord.EmitGapSnapshot(ctx, time.Now())
 
 				// 4. Update TUI events list
 				select {
