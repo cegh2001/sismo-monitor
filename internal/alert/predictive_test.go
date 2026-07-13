@@ -1,6 +1,7 @@
 package alert
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 	"time"
@@ -207,4 +208,77 @@ func TestComputeProjections(t *testing.T) {
 	if projections[1].EventCount != 1 {
 		t.Errorf("Expected event count for G_2_2 to be 1, got %d", projections[1].EventCount)
 	}
+}
+
+func TestFaultProjectionPhaseFieldBackwardCompat(t *testing.T) {
+	// 1. Zero-value Phase must not break existing JSON consumers.
+	//    Backward compat means: either omitted entirely OR explicit "null".
+	//    Both are valid: legacy consumers ignore unknown fields.
+	proj := FaultProjection{GridCell: "G_legacy"}
+	data, err := json.Marshal(proj)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	got := string(data)
+	if !contains(got, `"phase":null`) && !contains(got, `"grid_cell":"G_legacy"`) {
+		t.Errorf("Phase field missing from JSON: %s", got)
+	}
+	// Verify phase appears as null in the output
+	if !contains(got, `"phase":null`) {
+		t.Errorf("Expected zero-value Phase to serialize as null, got: %s", got)
+	}
+
+	// 2. Old JSON without "phase" key must decode successfully (backward compat)
+	legacyJSON := `{"grid_cell":"G_old","fault_name":"Falla de Boconó","b_value":1.1,"mainshock_mag":4.5,"mainshock_time":"2026-01-01T00:00:00Z","bath_max_replica":3.3,"omori_replica_rate":0.5,"expected_replicas_24":1.2,"event_count":10}`
+	var p FaultProjection
+	if err := json.Unmarshal([]byte(legacyJSON), &p); err != nil {
+		t.Fatalf("Legacy unmarshal failed: %v", err)
+	}
+	if p.GridCell != "G_old" {
+		t.Errorf("Expected GridCell G_old, got %s", p.GridCell)
+	}
+	if p.Phase.Phase != PhaseEstable {
+		t.Errorf("Expected zero-value Phase.Phase = PhaseEstable, got %v", p.Phase.Phase)
+	}
+
+	// 3. Round-trip: encoding a populated Phase must decode correctly
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+	full := FaultProjection{
+		GridCell: "G_full",
+		Phase: CellPhase{
+			GridCell:      "G_full",
+			Phase:         PhasePrecursor,
+			Decayed:       false,
+			MainshockMag:  5.0,
+			MainshockTime: now,
+		},
+	}
+	data, err = json.Marshal(full)
+	if err != nil {
+		t.Fatalf("Marshal full failed: %v", err)
+	}
+	var decoded FaultProjection
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal full failed: %v", err)
+	}
+	if decoded.Phase.Phase != PhasePrecursor {
+		t.Errorf("Expected PhasePrecursor after round-trip, got %v", decoded.Phase.Phase)
+	}
+	if decoded.Phase.MainshockMag != 5.0 {
+		t.Errorf("Expected MainshockMag=5.0, got %v", decoded.Phase.MainshockMag)
+	}
+}
+
+// contains is a small strings.Contains shim to avoid extra imports in this file.
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
+}
+
+func indexOf(s, sub string) int {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return i
+		}
+	}
+	return -1
 }

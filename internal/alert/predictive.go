@@ -19,6 +19,11 @@ type FaultProjection struct {
 	OmoriReplicaRate   float64   `json:"omori_replica_rate"`   // expected rate at now
 	ExpectedReplicas24 float64   `json:"expected_replicas_24"` // expected replicas in next 24 hours
 	EventCount         int       `json:"event_count"`
+	// Phase is the live swarm-phase classification for this cell. It is
+	// populated by the coordinator (not by ComputeProjections), so JSON
+	// consumers that pre-date this field will see it omitted entirely
+	// (zero value is omitempty). Backward-compatible.
+	Phase CellPhase `json:"phase,omitempty"`
 }
 
 // GetFaultName returns the fault name associated with a given latitude and longitude.

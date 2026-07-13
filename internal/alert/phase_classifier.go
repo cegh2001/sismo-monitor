@@ -1,6 +1,9 @@
 package alert
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // SwarmPhase represents the operational phase of a locked grid cell, derived
 // from event history. It encodes both the threat level and the visual color
@@ -34,6 +37,28 @@ type CellPhase struct {
 	Decayed       bool      // true when PhaseReplicas 7-14d since mainshock
 	MainshockMag  float64
 	MainshockTime time.Time
+}
+
+// MarshalJSON implements custom encoding so that an unset (zero) CellPhase
+// serializes to null. This lets FaultProjection.Phase use `omitempty` and
+// keeps the JSON payload clean when no phase has been classified yet.
+func (c CellPhase) MarshalJSON() ([]byte, error) {
+	if c.Phase == PhaseEstable && c.MainshockMag == 0 && c.MainshockTime.IsZero() {
+		return []byte("null"), nil
+	}
+	// Wrap into a private alias to avoid infinite recursion.
+	type cellPhaseAlias CellPhase
+	return json.Marshal(cellPhaseAlias(c))
+}
+
+// UnmarshalJSON tolerates both object form and null (zero value).
+func (c *CellPhase) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*c = CellPhase{}
+		return nil
+	}
+	type cellPhaseAlias CellPhase
+	return json.Unmarshal(data, (*cellPhaseAlias)(c))
 }
 
 // ClassifyCellPhase is a pure function: same inputs always produce the same

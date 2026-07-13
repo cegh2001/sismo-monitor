@@ -211,6 +211,36 @@ func (g *GapAnalyzer) GetActiveLockSegments(now time.Time) []string {
 	return locked
 }
 
+// GetCellEvents returns sismos in the given grid cell with Time >= since,
+// in chronological order (oldest first). The result is a fresh slice —
+// callers may freely modify it. If the cell is unknown or the cutoff is in
+// the future, returns an empty (non-nil) slice.
+//
+// O(log n) per call via binary search on the time-sorted cell slice.
+func (g *GapAnalyzer) GetCellEvents(gridCell string, since time.Time) []Sismo {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+
+	cellSismos, found := g.cellSismosMap[gridCell]
+	if !found {
+		return []Sismo{}
+	}
+
+	// Binary search for the first event with Time >= since.
+	idx := sort.Search(len(cellSismos), func(i int) bool {
+		return !cellSismos[i].Time.Before(since)
+	})
+
+	if idx >= len(cellSismos) {
+		return []Sismo{}
+	}
+
+	// Return a copy to keep the internal index isolated from the caller.
+	out := make([]Sismo, len(cellSismos)-idx)
+	copy(out, cellSismos[idx:])
+	return out
+}
+
 // isLockedAt evaluates lock state at time 't' without acquiring locks.
 func (g *GapAnalyzer) isLockedAt(gridCell string, t time.Time) bool {
 	cellSismos, found := g.cellSismosMap[gridCell]

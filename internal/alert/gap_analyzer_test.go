@@ -326,3 +326,97 @@ func TestGapAnalyzerPurgeSimulationEvents(t *testing.T) {
 	}
 }
 
+func TestGapAnalyzerGetCellEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "sismos_cell_events.json")
+
+	analyzer := NewGapAnalyzer(dbPath)
+	now := time.Date(2026, 7, 10, 12, 0, 0, 0, time.UTC)
+
+	// Seed 5 sismos in G_alpha over a 40-day span.
+	// Index:  0     1     2     3     4
+	// Age:   40d   20d   10d   5d    1d
+	seed := []Sismo{
+		{ID: "a0", GridCell: "G_alpha", Magnitude: 2.0, Time: now.Add(-40 * 24 * time.Hour)},
+		{ID: "a1", GridCell: "G_alpha", Magnitude: 2.1, Time: now.Add(-20 * 24 * time.Hour)},
+		{ID: "a2", GridCell: "G_alpha", Magnitude: 4.5, Time: now.Add(-10 * 24 * time.Hour)},
+		{ID: "a3", GridCell: "G_alpha", Magnitude: 2.3, Time: now.Add(-5 * 24 * time.Hour)},
+		{ID: "a4", GridCell: "G_alpha", Magnitude: 2.4, Time: now.Add(-1 * 24 * time.Hour)},
+		// Decoy in another cell — must NOT appear in G_alpha results.
+		{ID: "b0", GridCell: "G_beta", Magnitude: 3.0, Time: now.Add(-2 * 24 * time.Hour)},
+	}
+	analyzer.SetSismos(seed)
+
+	t.Run("returns all events in cell with no cutoff", func(t *testing.T) {
+		got := analyzer.GetCellEvents("G_alpha", time.Time{})
+		if len(got) != 5 {
+			t.Errorf("Expected 5 events in G_alpha, got %d", len(got))
+		}
+		// Must be sorted chronologically (oldest first)
+		for i := 1; i < len(got); i++ {
+			if got[i].Time.Before(got[i-1].Time) {
+				t.Errorf("Events not sorted at index %d", i)
+			}
+		}
+	})
+
+	t.Run("returns only events on/after cutoff (7d boundary)", func(t *testing.T) {
+		got := analyzer.GetCellEvents("G_alpha", now.Add(-7*24*time.Hour))
+		// Expected: a3 (5d) and a4 (1d) only — 2 events
+		if len(got) != 2 {
+			t.Errorf("Expected 2 events since 7d cutoff, got %d", len(got))
+		}
+		if got[0].ID != "a3" {
+			t.Errorf("Expected first event a3, got %s", got[0].ID)
+		}
+		if got[1].ID != "a4" {
+			t.Errorf("Expected second event a4, got %s", got[1].ID)
+		}
+	})
+
+	t.Run("returns only events on/after cutoff (14d boundary)", func(t *testing.T) {
+		got := analyzer.GetCellEvents("G_alpha", now.Add(-14*24*time.Hour))
+		// Expected: a2 (10d), a3 (5d), a4 (1d) — 3 events
+		if len(got) != 3 {
+			t.Errorf("Expected 3 events since 14d cutoff, got %d", len(got))
+		}
+		if got[0].ID != "a2" {
+			t.Errorf("Expected first event a2, got %s", got[0].ID)
+		}
+	})
+
+	t.Run("returns only events on/after cutoff (30d boundary)", func(t *testing.T) {
+		got := analyzer.GetCellEvents("G_alpha", now.Add(-30*24*time.Hour))
+		// Expected: a1 (20d), a2 (10d), a3 (5d), a4 (1d) — 4 events
+		if len(got) != 4 {
+			t.Errorf("Expected 4 events since 30d cutoff, got %d", len(got))
+		}
+		if got[0].ID != "a1" {
+			t.Errorf("Expected first event a1, got %s", got[0].ID)
+		}
+	})
+
+	t.Run("returns empty slice for unknown cell", func(t *testing.T) {
+		got := analyzer.GetCellEvents("G_omega", now.Add(-7*24*time.Hour))
+		if len(got) != 0 {
+			t.Errorf("Expected 0 events for unknown cell, got %d", len(got))
+		}
+	})
+
+	t.Run("returns empty slice when cutoff is in the future", func(t *testing.T) {
+		got := analyzer.GetCellEvents("G_alpha", now.Add(24*time.Hour))
+		if len(got) != 0 {
+			t.Errorf("Expected 0 events for future cutoff, got %d", len(got))
+		}
+	})
+
+	t.Run("does not leak events from other cells", func(t *testing.T) {
+		got := analyzer.GetCellEvents("G_alpha", now.Add(-30*24*time.Hour))
+		for _, ev := range got {
+			if ev.GridCell != "G_alpha" {
+				t.Errorf("Found event from cell %q in G_alpha result", ev.GridCell)
+			}
+		}
+	})
+}
+
