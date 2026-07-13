@@ -55,6 +55,10 @@ type ViewType int
 const (
 	ViewDashboard ViewType = iota
 	ViewPredictive
+
+	// simCooldown prevents spurious terminal input (common on Windows) from
+	// accidentally triggering simulations during program startup.
+	simCooldown = 2 * time.Second
 )
 
 // Model represents the state of the TUI dashboard.
@@ -73,6 +77,7 @@ type Model struct {
 	termHeight       int
 	termWidth        int
 	currentView      ViewType
+	startTime        time.Time
 }
 
 // NewModel initializes the Bubbletea model.
@@ -96,6 +101,7 @@ func NewModel(updateChan <-chan tea.Msg, port string) Model {
 		termHeight:       24,
 		termWidth:        97,
 		currentView:      ViewDashboard,
+		startTime:        time.Now(),
 	}
 }
 
@@ -172,9 +178,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "q", "ctrl+c":
 			return m, tea.Quit
 		case "t":
+			if time.Since(m.startTime) < simCooldown {
+				m.statusMsg = "Startup cooldown active — simulation triggers disabled for 2s"
+				return m, nil
+			}
 			m.statusMsg = "Triggering critical test alert..."
 			return m, triggerSimulation(m.Port, 6.5, 10.60, -66.93, "La Guaira Port (Simulation)")
 		case "s":
+			if time.Since(m.startTime) < simCooldown {
+				m.statusMsg = "Startup cooldown active — simulation triggers disabled for 2s"
+				return m, nil
+			}
 			m.statusMsg = "Triggering swarm test alerts (5 events)..."
 			return m, tea.Batch(
 				triggerSimulation(m.Port, 3.2, 10.58, -66.95, "Swarmland (Sim A)"),
@@ -184,6 +198,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				triggerSimulation(m.Port, 3.0, 10.57, -66.94, "Swarmland (Sim E)"),
 			)
 		case "i":
+			if time.Since(m.startTime) < simCooldown {
+				m.statusMsg = "Startup cooldown active — simulation triggers disabled for 2s"
+				return m, nil
+			}
 			m.statusMsg = "Triggering instability test alerts (5 hist, 3 swarm)..."
 			return m, triggerInstabilitySimulation(m.Port)
 		case "p":
