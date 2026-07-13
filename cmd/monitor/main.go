@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -39,6 +40,13 @@ func main() {
 
 	// Internal sismo channel for workers to push to the coordinator
 	eventChan := make(chan alert.Sismo, 200)
+
+	// Fast-path channel: EMSC events are also dispatched here so the FastPath
+	// goroutine can emit an [EARLY WARNING] Pushover alert within ~2s of
+	// WebSocket receipt — well before the 30-90s coordinator pipeline
+	// (dedup → classify → notify) completes. Sized to absorb short bursts
+	// without dropping; drops log a [FASTPATH] warning and are safe.
+	fastOut := make(chan alert.Sismo, 10)
 
 	// Initialize Alert Engine
 	swarmQueue := alert.NewSwarmQueue()
@@ -81,9 +89,29 @@ func main() {
 		}
 	}
 
-	// Start EMSC WebSocket consumer client
+	// Start EMSC WebSocket consumer client (dual-channel: feeds both the
+	// main coordinator pipeline and the fast-path early-warning channel).
 	emscClient := ingest.NewEMSCClient(tuiLog)
-	go emscClient.Start(ctx, eventChan)
+	if cfg.EMSCFastPathEnabled {
+		// Build a FastPath with parsed family locations and an independent
+		// cooldown — its own rate limiter must NOT share the main notifier's.
+		familyLocs := ingest.ParseFamilyLocations(strings.Join(cfg.EMSCFastPathFamilyLocations, ";"))
+		fp := ingest.NewFastPath(
+			true,
+			cfg.EMSCFastPathMagThreshold,
+			time.Duration(cfg.EMSCFastPathRateLimitSec)*time.Second,
+			familyLocs,
+			notifier,
+			tuiLog,
+		)
+		go fp.Start(ctx, fastOut)
+		tuiLog("Fast-path early warning ENABLED (mag>=%.1f, cooldown=%ds, family-locs=%d)",
+			cfg.EMSCFastPathMagThreshold, cfg.EMSCFastPathRateLimitSec, len(familyLocs))
+		go emscClient.Start(ctx, eventChan, fastOut)
+	} else {
+		tuiLog("Fast-path early warning DISABLED (EMSC_FASTPATH_ENABLED=false)")
+		go emscClient.Start(ctx, eventChan, nil)
+	}
 
 	// Start Funvisis HTML scraper polling loop
 	funvisisErrHandler := func(err error) {

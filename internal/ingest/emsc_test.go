@@ -95,9 +95,10 @@ func TestEMSCReconnection(t *testing.T) {
 	defer cancel()
 
 	out := make(chan alert.Sismo, 10)
+	fastOut := make(chan alert.Sismo, 10)
 
 	// Run Start in background
-	go client.Start(ctx, out)
+	go client.Start(ctx, out, fastOut)
 
 	// Wait briefly to allow reconnection attempts
 	time.Sleep(50 * time.Millisecond)
@@ -172,7 +173,8 @@ func TestEMSCOutOfBoundsFiltering(t *testing.T) {
 	defer cancel()
 
 	out := make(chan alert.Sismo, 10)
-	go client.Start(ctx, out)
+	fastOut := make(chan alert.Sismo, 10)
+	go client.Start(ctx, out, fastOut)
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -183,5 +185,203 @@ func TestEMSCOutOfBoundsFiltering(t *testing.T) {
 	ev := <-out
 	if ev.ID != "emsc-20260710xyz" {
 		t.Errorf("Expected event ID 'emsc-20260710xyz', got %q", ev.ID)
+	}
+}
+
+func TestEMSCDualChannel_FastOutReceivesInBoundsEvent(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("Upgrade error: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		msgInBounds := `{
+			"action": "create",
+			"data": {
+				"properties": {
+					"unid": "dual-1",
+					"time": "2026-07-10T16:20:00.0Z",
+					"mag": 5.5,
+					"depth": 10.0,
+					"flynn_region": "VENEZUELA",
+					"lat": 10.80,
+					"lon": -66.50
+				}
+			}
+		}`
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(msgInBounds))
+
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http://", "ws://", 1)
+	client := NewEMSCClient(nil)
+	client.url = wsURL
+	client.reconnectDelay = 1 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out := make(chan alert.Sismo, 10)
+	fastOut := make(chan alert.Sismo, 10)
+	go client.Start(ctx, out, fastOut)
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(out) >= 1 && len(fastOut) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(out) < 1 {
+		t.Errorf("Expected out channel to receive event, got %d", len(out))
+	}
+	if len(fastOut) < 1 {
+		t.Errorf("Expected fastOut channel to receive event, got %d", len(fastOut))
+	}
+	if got := <-fastOut; got.ID != "emsc-dual-1" {
+		t.Errorf("Expected fastOut event ID 'emsc-dual-1', got %q", got.ID)
+	}
+}
+
+func TestEMSCDualChannel_FastOutFullDropsToFastPathOnly(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("Upgrade error: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		msgInBounds := `{
+			"action": "create",
+			"data": {
+				"properties": {
+					"unid": "drop-1",
+					"time": "2026-07-10T16:20:00.0Z",
+					"mag": 5.5,
+					"depth": 10.0,
+					"flynn_region": "VENEZUELA",
+					"lat": 10.80,
+					"lon": -66.50
+				}
+			}
+		}`
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(msgInBounds))
+
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http://", "ws://", 1)
+	client := NewEMSCClient(nil)
+	client.url = wsURL
+	client.reconnectDelay = 1 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out := make(chan alert.Sismo, 10)
+	// fastOut is full from the start — every send must drop on the default branch
+	fastOut := make(chan alert.Sismo, 1)
+	fastOut <- alert.Sismo{ID: "prefilled"}
+
+	go client.Start(ctx, out, fastOut)
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(out) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(out) < 1 {
+		t.Errorf("Expected out channel to receive event even when fastOut is full, got %d", len(out))
+	}
+	if len(fastOut) != 1 {
+		t.Errorf("Expected fastOut to remain at capacity 1 (no overflow), got %d", len(fastOut))
+	}
+	if got := <-fastOut; got.ID != "prefilled" {
+		t.Errorf("Expected prefilled event in fastOut, got %q", got.ID)
+	}
+}
+
+func TestEMSCDualChannel_NilFastOutIsNoOp(t *testing.T) {
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("Upgrade error: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		msgInBounds := `{
+			"action": "create",
+			"data": {
+				"properties": {
+					"unid": "nilfast-1",
+					"time": "2026-07-10T16:20:00.0Z",
+					"mag": 5.5,
+					"depth": 10.0,
+					"flynn_region": "VENEZUELA",
+					"lat": 10.80,
+					"lon": -66.50
+				}
+			}
+		}`
+		_ = conn.WriteMessage(websocket.TextMessage, []byte(msgInBounds))
+
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer server.Close()
+
+	wsURL := strings.Replace(server.URL, "http://", "ws://", 1)
+	client := NewEMSCClient(nil)
+	client.url = wsURL
+	client.reconnectDelay = 1 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	out := make(chan alert.Sismo, 10)
+	// fastOut is nil — Start must not block
+	go client.Start(ctx, out, nil)
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(out) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(out) < 1 {
+		t.Errorf("Expected out channel to receive event when fastOut is nil, got %d", len(out))
 	}
 }
