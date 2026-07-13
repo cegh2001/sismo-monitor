@@ -57,7 +57,9 @@ const (
 
 // Alert wraps a seismic event with its evaluated threat level.
 type Alert struct {
-	Sismo Sismo      `json:"sismo"`
-	Level AlertLevel `json:"level"`
+	Sismo        Sismo      `json:"sismo"`
+	Level        AlertLevel `json:"level"`
+	EarlyWarning bool       `json:"early_warning,omitempty"` // when true, notifier uses [EARLY WARNING] format
+	Body         string     `json:"body,omitempty"`          // overrides default body when EarlyWarning is true
 }
 

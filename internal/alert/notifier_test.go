@@ -2,8 +2,10 @@ package alert
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,7 +29,7 @@ func TestPushoverNotifierMock(t *testing.T) {
 
 	// Initialize notifier with tokens and override the API URL to point to our test server
 	notifier := NewPushoverNotifier("app-token-123", "user-key-456", nil)
-	notifier.apiURL = ts.URL
+	notifier.SetAPIURL(ts.URL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -89,7 +91,7 @@ func TestPushoverNotifierLevelInstability(t *testing.T) {
 	defer ts.Close()
 
 	notifier := NewPushoverNotifier("app-token-123", "user-key-456", nil)
-	notifier.apiURL = ts.URL
+	notifier.SetAPIURL(ts.URL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -146,7 +148,7 @@ func TestPushoverNotifierRateLimitSpacing(t *testing.T) {
 
 	// Initialize notifier with 200ms rateLimitInterval
 	notifier := NewPushoverNotifier("app-token-123", "user-key-456", nil)
-	notifier.apiURL = ts.URL
+	notifier.SetAPIURL(ts.URL)
 	notifier.rateLimitInterval = 200 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -209,6 +211,102 @@ func TestPushoverNotifierRateLimitSpacing(t *testing.T) {
 	}
 }
 
+func TestPushoverNotifierSendNowBypassesQueue(t *testing.T) {
+	var sendCount int
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sendCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":1,"request":"req-123"}`))
+	}))
+	defer ts.Close()
+
+	notifier := NewPushoverNotifier("app-token-123", "user-key-456", nil)
+	notifier.SetAPIURL(ts.URL)
+	// High rate limit to ensure SendNow is NOT rate-limited
+	notifier.rateLimitInterval = 10 * time.Second
+
+	// Pre-populate queue with another alert that should NOT be sent (proving
+	// SendNow is independent of the queue).
+	pre := Alert{
+		Sismo: Sismo{ID: "queued-pre", Magnitude: 4.0, Location: "pre", Time: time.Now()},
+		Level: LevelInfo,
+	}
+	if err := notifier.Notify(context.Background(), pre); err != nil {
+		t.Fatalf("Failed to queue pre-alert: %v", err)
+	}
+
+	// SendNow: must call send() synchronously, bypassing the queue
+	now := Alert{
+		Sismo: Sismo{ID: "sendnow-1", Magnitude: 5.5, Location: "LaGuaira", Time: time.Now()},
+		Level: LevelPreAlert,
+	}
+	if err := notifier.SendNow(now); err != nil {
+		t.Fatalf("SendNow failed: %v", err)
+	}
+
+	// The SendNow call must have produced exactly 1 HTTP send.
+	if sendCount != 1 {
+		t.Errorf("Expected exactly 1 send from SendNow, got %d", sendCount)
+	}
+
+	// Now drain the queue with Start (we must not call Start before SendNow to
+	// avoid the queued pre-alert being sent and inflating the count).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go notifier.Start(ctx)
+
+	// Wait until either the queued alert is sent or 1s elapses.
+	limit := time.Now().Add(1 * time.Second)
+	for time.Now().Before(limit) {
+		if sendCount >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if sendCount < 2 {
+		t.Errorf("Expected queued alert to dispatch after Start, total sends=%d", sendCount)
+	}
+}
+
+func TestPushoverNotifierSendNowLogsEarlyWarningPrefix(t *testing.T) {
+	var logged []string
+	logger := func(format string, args ...interface{}) {
+		logged = append(logged, fmt.Sprintf(format, args...))
+	}
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":1,"request":"req-abc"}`))
+	}))
+	defer ts.Close()
+
+	notifier := NewPushoverNotifier("app-token-123", "user-key-456", logger)
+	notifier.SetAPIURL(ts.URL)
+
+	now := Alert{
+		Sismo: Sismo{ID: "sendnow-prefix", Magnitude: 5.0, Location: "LaGuaira", Time: time.Now()},
+		Level: LevelPreAlert,
+	}
+	if err := notifier.SendNow(now); err != nil {
+		t.Fatalf("SendNow failed: %v", err)
+	}
+
+	// At least one log line must mention the alert's location.
+	found := false
+	for _, line := range logged {
+		if strings.Contains(line, "LaGuaira") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected SendNow to log alert location; got logs: %v", logged)
+	}
+}
+
 func TestPushoverNotifierRateLimitCancellation(t *testing.T) {
 	var sendTimes []time.Time
 
@@ -222,7 +320,7 @@ func TestPushoverNotifierRateLimitCancellation(t *testing.T) {
 
 	// Initialize notifier with 1 second rateLimitInterval
 	notifier := NewPushoverNotifier("app-token-123", "user-key-456", nil)
-	notifier.apiURL = ts.URL
+	notifier.SetAPIURL(ts.URL)
 	notifier.rateLimitInterval = 1 * time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())

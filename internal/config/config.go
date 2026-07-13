@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -13,6 +14,12 @@ type Config struct {
 	Port              string
 	USGSRealtimeURL   string
 	USGSHistoricalURL string
+
+	// EMSC Fast-Path Early Warning fields
+	EMSCFastPathEnabled        bool
+	EMSCFastPathMagThreshold   float64
+	EMSCFastPathRateLimitSec   int
+	EMSCFastPathFamilyLocations []string
 }
 
 // loadDotEnv reads key-value pairs from a local .env file and injects them into environment variables.
@@ -60,11 +67,52 @@ func Load() *Config {
 		usgsHistorical = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 	}
 
+	fastPathEnabled := true
+	if v := os.Getenv("EMSC_FASTPATH_ENABLED"); v != "" {
+		parsed, err := strconv.ParseBool(v)
+		if err == nil {
+			fastPathEnabled = parsed
+		}
+	}
+
+	fastPathMagThreshold := 4.5
+	if v := os.Getenv("EMSC_FASTPATH_MAG_THRESHOLD"); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+			fastPathMagThreshold = parsed
+		}
+	}
+
+	fastPathRateLimitSec := 10
+	if v := os.Getenv("EMSC_FASTPATH_RATE_LIMIT_SEC"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			fastPathRateLimitSec = parsed
+		}
+	}
+
+	fastPathFamilyLocations := []string{"10.60,-66.93,LaGuaira"}
+	if v := os.Getenv("EMSC_FASTPATH_FAMILY_LOCATIONS"); v != "" {
+		parts := strings.Split(v, ";")
+		locs := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				locs = append(locs, p)
+			}
+		}
+		if len(locs) > 0 {
+			fastPathFamilyLocations = locs
+		}
+	}
+
 	return &Config{
-		PushoverAppToken:  os.Getenv("PUSHOVER_APP_TOKEN"),
-		PushoverUserKey:   os.Getenv("PUSHOVER_USER_KEY"),
-		Port:              port,
-		USGSRealtimeURL:   usgsRealtime,
-		USGSHistoricalURL: usgsHistorical,
+		PushoverAppToken:           os.Getenv("PUSHOVER_APP_TOKEN"),
+		PushoverUserKey:            os.Getenv("PUSHOVER_USER_KEY"),
+		Port:                       port,
+		USGSRealtimeURL:            usgsRealtime,
+		USGSHistoricalURL:          usgsHistorical,
+		EMSCFastPathEnabled:        fastPathEnabled,
+		EMSCFastPathMagThreshold:   fastPathMagThreshold,
+		EMSCFastPathRateLimitSec:   fastPathRateLimitSec,
+		EMSCFastPathFamilyLocations: fastPathFamilyLocations,
 	}
 }

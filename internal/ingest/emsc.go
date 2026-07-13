@@ -30,7 +30,15 @@ func NewEMSCClient(logger func(string, ...interface{})) *EMSCClient {
 
 // Start initiates the WebSocket client and listens for incoming seismic events.
 // It automatically reconnects using an exponential backoff (1s up to 60s).
-func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo) {
+//
+// Every in-bounds event is sent unconditionally to `out` (the main
+// coordinator pipeline). When `fastOut` is non-nil, the same event is also
+// sent to the fast-path channel using a non-blocking `select` with a default
+// branch — if the fast-path consumer is slow, the event is dropped from the
+// fast path with a [FASTPATH] log line, but still reaches the main pipeline.
+// Passing `fastOut = nil` disables the fast-path dispatch (used when
+// EMSC_FASTPATH_ENABLED=false).
+func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo, fastOut chan<- alert.Sismo) {
 	backoff := 1 * time.Second
 	if c.reconnectDelay > 0 {
 		backoff = c.reconnectDelay
@@ -46,10 +54,10 @@ func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 		}
 
 		c.log("Connecting to EMSC WebSocket: %s", c.url)
-		
+
 		dialer := websocket.DefaultDialer
 		dialer.HandshakeTimeout = 10 * time.Second
-		
+
 		conn, _, err := dialer.DialContext(ctx, c.url, nil)
 		if err != nil {
 			c.log("EMSC dial error: %v. Reconnecting in %v...", err, backoff)
@@ -94,6 +102,13 @@ func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo) {
 				case out <- sismo:
 				default:
 					c.log("Output queue full, dropping EMSC event %s", sismo.ID)
+				}
+				if fastOut != nil {
+					select {
+					case fastOut <- sismo:
+					default:
+						c.log("[FASTPATH] fastOut channel full, dropping fast-path dispatch for %s", sismo.ID)
+					}
 				}
 			}
 		}()

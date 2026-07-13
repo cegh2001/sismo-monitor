@@ -63,6 +63,18 @@ func (n *PushoverNotifier) Notify(ctx context.Context, alert Alert) error {
 	}
 }
 
+// SendNow dispatches an alert immediately, bypassing the queue and the
+// notifier's rate limit. The caller is responsible for any rate limiting
+// (e.g., the FastPath component enforces its own cooldown).
+func (n *PushoverNotifier) SendNow(alert Alert) error {
+	return n.send(alert)
+}
+
+// SetAPIURL overrides the API endpoint. Intended for tests using httptest.
+func (n *PushoverNotifier) SetAPIURL(u string) {
+	n.apiURL = u
+}
+
 // Start runs the notifier consumption loop. It processes alerts from the queue,
 // enforcing a rate limit of at least 10 seconds between API dispatches (configurable via rateLimitInterval).
 func (n *PushoverNotifier) Start(ctx context.Context) {
@@ -130,7 +142,15 @@ func (n *PushoverNotifier) send(alert Alert) error {
 	var title string
 	var message string
 
-	if alert.Level == LevelInstability {
+	if alert.EarlyWarning {
+		title = fmt.Sprintf("[EARLY WARNING] M%.1f - %s", alert.Sismo.Magnitude, alert.Sismo.Location)
+		if alert.Body != "" {
+			message = alert.Body
+		} else {
+			message = fmt.Sprintf("Magnitude: %.1f Mw\nLocation: %s\n— pending classification",
+				alert.Sismo.Magnitude, alert.Sismo.Location)
+		}
+	} else if alert.Level == LevelInstability {
 		title = "Alerta Especial: Inestabilidad Cortical"
 		message = fmt.Sprintf("Alerta Especial: Actividad sísmica detectada en segmento previamente bloqueado. Posible deslizamiento acelerado en desarrollo (Falla de San Sebastián/Boconó, cuadrante %s).\n\nMagnitude: %.1f Mw\nDepth: %.1f km\nDistance: %.1f km\nLocation: %s\nTime: %s%s",
 			alert.Sismo.GridCell,
