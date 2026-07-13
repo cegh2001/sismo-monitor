@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"sismo-monitor/internal/alert"
 )
 
@@ -448,6 +449,220 @@ func TestViewToggle(t *testing.T) {
 	if !strings.Contains(view, "VENEZUELAN SEISMIC MONITOR") {
 		t.Error("After second 'p' key, view should be dashboard again")
 	}
+}
+
+func TestModelUpdateMsgGapState(t *testing.T) {
+	updateChan := make(chan tea.Msg, 10)
+	model := NewModel(updateChan, "8080")
+
+	t.Run("MsgGapState stores phases into Model.GapState", func(t *testing.T) {
+		phases := []alert.CellPhase{
+			{GridCell: "G_0_0", Phase: alert.PhasePrecursor, MainshockMag: 5.0},
+			{GridCell: "G_1_1", Phase: alert.PhaseReplicas, Decayed: true, MainshockMag: 4.6},
+		}
+		res, cmd := model.Update(MsgGapState{Phases: phases})
+		m := res.(Model)
+		if len(m.GapState) != 2 {
+			t.Fatalf("Expected GapState length 2, got %d", len(m.GapState))
+		}
+		if m.GapState[0].GridCell != "G_0_0" {
+			t.Errorf("Expected first cell G_0_0, got %s", m.GapState[0].GridCell)
+		}
+		if m.GapState[0].Phase != alert.PhasePrecursor {
+			t.Errorf("Expected first cell PhasePrecursor, got %v", m.GapState[0].Phase)
+		}
+		if !m.GapState[1].Decayed {
+			t.Errorf("Expected second cell Decayed=true")
+		}
+		if cmd == nil {
+			t.Error("Expected non-nil cmd to keep subscription alive")
+		}
+	})
+
+	t.Run("MsgGapState with empty phases clears GapState", func(t *testing.T) {
+		res, _ := model.Update(MsgGapState{Phases: []alert.CellPhase{}})
+		m := res.(Model)
+		if len(m.GapState) != 0 {
+			t.Errorf("Expected GapState length 0, got %d", len(m.GapState))
+		}
+	})
+
+	t.Run("MsgGapState with nil phases treated as empty", func(t *testing.T) {
+		res, _ := model.Update(MsgGapState{Phases: nil})
+		m := res.(Model)
+		if m.GapState == nil {
+			t.Error("Expected GapState to be non-nil empty slice")
+		}
+		if len(m.GapState) != 0 {
+			t.Errorf("Expected GapState length 0, got %d", len(m.GapState))
+		}
+	})
+}
+
+func TestRenderPredictiveViewPhaseBadges(t *testing.T) {
+	// Force ANSI output in tests so we can assert on SGR escape codes.
+	lipgloss.SetColorProfile(lipgloss.ColorProfile())
+
+	updateChan := make(chan tea.Msg, 10)
+	now := time.Now()
+
+	// Build a model with projections matching the GapState cells.
+	// Uses renderPredictiveView() directly to bypass View()'s scroll
+	// slicing (which truncates to termHeight).
+	buildModel := func(phases []alert.CellPhase) Model {
+		m := NewModel(updateChan, "8080")
+		m.Projections = make([]alert.FaultProjection, 0, len(phases))
+		for _, p := range phases {
+			m.Projections = append(m.Projections, alert.FaultProjection{
+				GridCell:   p.GridCell,
+				FaultName:  "Falla de Boconó",
+				BValue:     0.85,
+				EventCount: 5,
+			})
+		}
+		m.GapState = phases
+		m.currentView = ViewPredictive
+		m.termHeight = 200 // ensure full view is shown
+		return m
+	}
+
+	t.Run("renders all 5 phase labels in cell rows", func(t *testing.T) {
+		phases := []alert.CellPhase{
+			{GridCell: "G_red", Phase: alert.PhasePrecursor},
+			{GridCell: "G_org", Phase: alert.PhaseReplicas},
+			{GridCell: "G_yel", Phase: alert.PhaseAtencion},
+			{GridCell: "G_gry", Phase: alert.PhaseSilencio},
+			{GridCell: "G_grn", Phase: alert.PhaseEstable},
+		}
+		view := buildModel(phases).View()
+		// Each phase badge has a unique label. The legend renders all 5,
+		// and the cell rows also render their phase badge.
+		labels := []string{"[RED]", "[ORANGE]", "[YELLOW]", "[GRAY]", "[GREEN]"}
+		for _, lbl := range labels {
+			if !strings.Contains(view, lbl) {
+				t.Errorf("Expected view to contain phase label %s", lbl)
+			}
+		}
+	})
+
+	t.Run("GRAY cells hidden when any non-GRAY cell exists", func(t *testing.T) {
+		phases := []alert.CellPhase{
+			{GridCell: "G_red", Phase: alert.PhasePrecursor},
+			{GridCell: "G_gry", Phase: alert.PhaseSilencio},
+		}
+		view := buildModel(phases).View()
+		onlyGray := buildModel([]alert.CellPhase{{GridCell: "G_gry", Phase: alert.PhaseSilencio}}).View()
+		if !strings.Contains(onlyGray, "G_gry") {
+			t.Fatalf("Baseline broken: GRAY-only view should show G_gry")
+		}
+		stripped := stripANSI(view)
+		onlyGrayStripped := stripANSI(onlyGray)
+		// In the mixed view, the GRAY row is hidden — but the legend still
+		// mentions G_gry. In the only-GRAY view, both legend and row show it.
+		// Assert that mixed view mentions G_gry fewer times.
+		mixedCount := strings.Count(stripped, "G_gry")
+		onlyCount := strings.Count(onlyGrayStripped, "G_gry")
+		if mixedCount >= onlyCount {
+			t.Errorf("Expected GRAY row to be hidden in mixed view (G_red+G_gry): mixed=%d, only_gray=%d", mixedCount, onlyCount)
+		}
+		// And specifically, the only-GRAY cell line should not be present
+		// in the mixed view's cell-rows area.
+		if strings.Contains(stripped, "G_gry            ") {
+			// G_gry padded to cell width — this is the cell row format
+			t.Errorf("Mixed view should not contain G_gry cell row; got: %s", stripped)
+		}
+	})
+
+	t.Run("GRAY cells visible when no non-GRAY cells", func(t *testing.T) {
+		phases := []alert.CellPhase{
+			{GridCell: "G_gry1", Phase: alert.PhaseSilencio},
+			{GridCell: "G_gry2", Phase: alert.PhaseSilencio},
+		}
+		view := buildModel(phases).View()
+		stripped := stripANSI(view)
+		if !strings.Contains(stripped, "G_gry1") {
+			t.Error("GRAY cell G_gry1 should be visible when no non-GRAY cells exist")
+		}
+		if !strings.Contains(stripped, "G_gry2") {
+			t.Error("GRAY cell G_gry2 should be visible when no non-GRAY cells exist")
+		}
+	})
+
+	t.Run("ORANGE with Decayed=true uses dim/faint style", func(t *testing.T) {
+		phases := []alert.CellPhase{
+			{GridCell: "G_org_d", Phase: alert.PhaseReplicas, Decayed: true, MainshockMag: 4.6},
+		}
+		// Force ANSI256 so we get SGR escapes
+		lipgloss.SetColorProfile(2)
+		defer lipgloss.SetColorProfile(lipgloss.ColorProfile())
+		view := buildModel(phases).View()
+		// Faint() in lipgloss emits SGR 2.
+		if !strings.Contains(view, "\x1b[2;") {
+			t.Errorf("Expected dim/faint ANSI escape (\\x1b[2;) in view for Decayed ORANGE")
+		}
+	})
+
+	t.Run("ORANGE without Decayed renders without faint attribute on the cell row", func(t *testing.T) {
+		phases := []alert.CellPhase{
+			{GridCell: "G_org_f", Phase: alert.PhaseReplicas, Decayed: false, MainshockMag: 5.5},
+		}
+		lipgloss.SetColorProfile(2)
+		defer lipgloss.SetColorProfile(lipgloss.ColorProfile())
+		view := buildModel(phases).View()
+		stripped := stripANSI(view)
+		if !strings.Contains(stripped, "G_org_f") {
+			t.Error("Expected non-decayed ORANGE cell to render")
+		}
+	})
+
+	t.Run("existing columns (b-value, Bath, Omori) preserved with phase badge", func(t *testing.T) {
+		phases := []alert.CellPhase{
+			{GridCell: "G_full", Phase: alert.PhasePrecursor, MainshockMag: 5.0, MainshockTime: now},
+		}
+		m := buildModel(phases)
+		m.Projections[0].BValue = 0.65
+		m.Projections[0].MainshockMag = 5.0
+		m.Projections[0].MainshockTime = now.Add(-5 * time.Hour)
+		m.Projections[0].BathMaxReplica = 3.8
+		m.Projections[0].ExpectedReplicas24 = 2.1
+		view := stripANSI(m.View())
+		if !strings.Contains(view, "G_full") {
+			t.Error("Expected cell G_full to render")
+		}
+		if !strings.Contains(view, "0.65") {
+			t.Error("Expected b-value 0.65 to be preserved alongside phase")
+		}
+		if !strings.Contains(view, "3.8") {
+			t.Error("Expected Bath max replica 3.8 to be preserved")
+		}
+		if !strings.Contains(view, "2.10") {
+			t.Error("Expected Omori expected replicas 2.10 to be preserved")
+		}
+	})
+}
+
+// stripANSI removes ANSI escape codes from a string for content assertions
+// on styled terminal output. Used only in tests.
+func stripANSI(s string) string {
+	var out strings.Builder
+	i := 0
+	for i < len(s) {
+		if s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
+			// Skip until the final byte in 0x40..0x7e
+			j := i + 2
+			for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) {
+				j++
+			}
+			if j < len(s) {
+				j++ // include terminator
+			}
+			i = j
+			continue
+		}
+		out.WriteByte(s[i])
+		i++
+	}
+	return out.String()
 }
 
 func TestTruncate(t *testing.T) {

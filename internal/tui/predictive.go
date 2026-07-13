@@ -25,7 +25,64 @@ var (
 			BorderForeground(lipgloss.Color("#3A3A3C")).
 			Padding(1, 2).
 			Width(95)
+
+	// Phase badge styles — colors are the spec-mandated hex codes (§3).
+	// Each style is a small text-only badge rendered as a 9-char fixed-width cell.
+	phaseRedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Bold(true)
+	phaseOrangeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Bold(true)
+	phaseYellowStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFF00")).Bold(true)
+	phaseGrayStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#808080"))
+	phaseGreenStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00"))
+
+	// ORANGE-decayed style: same color, dimmed/faint per spec §1.7.
+	phaseOrangeDecayedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFA500")).Faint(true)
 )
+
+// renderPhaseBadge returns a 9-char phase label colored per spec §3.
+// When phase is PhaseReplicas and Decayed is true, the badge uses the
+// dimmed variant per spec §1.7.
+func renderPhaseBadge(p alert.CellPhase) string {
+	switch p.Phase {
+	case alert.PhasePrecursor:
+		return phaseRedStyle.Render("[RED]    ")
+	case alert.PhaseReplicas:
+		if p.Decayed {
+			return phaseOrangeDecayedStyle.Render("[ORANGE] ")
+		}
+		return phaseOrangeStyle.Render("[ORANGE] ")
+	case alert.PhaseAtencion:
+		return phaseYellowStyle.Render("[YELLOW] ")
+	case alert.PhaseSilencio:
+		return phaseGrayStyle.Render("[GRAY]   ")
+	case alert.PhaseEstable:
+		return phaseGreenStyle.Render("[GREEN]  ")
+	default:
+		return phaseGrayStyle.Render("[N/A]    ")
+	}
+}
+
+// phaseByCell returns the phase for a given grid cell, or PhaseEstable if
+// no entry exists (e.g., for a projection cell that has no gap data).
+func (m Model) phaseByCell(cell string) alert.CellPhase {
+	for _, p := range m.GapState {
+		if p.GridCell == cell {
+			return p
+		}
+	}
+	return alert.CellPhase{GridCell: cell, Phase: alert.PhaseEstable}
+}
+
+// hasNonGrayPhase reports whether any cell in GapState has a non-GRAY phase.
+// Used to decide whether to hide GRAY rows in the predictive view (spec §3:
+// "GRAY cells MUST be hidden when any non-GRAY cell exists in the snapshot").
+func (m Model) hasNonGrayPhase() bool {
+	for _, p := range m.GapState {
+		if p.Phase != alert.PhaseSilencio {
+			return true
+		}
+	}
+	return false
+}
 
 func (m Model) renderPredictiveView() string {
 	var s string
@@ -37,7 +94,8 @@ func (m Model) renderPredictiveView() string {
 	s += "  ANÁLISIS DE FALLAS ACTIVAS (Boconó, San Sebastián, El Pilar):\n"
 	s += singleDivider
 
-	s += fmt.Sprintf("  %-8s  %-10s  %-35s  %-20s  %-20s\n",
+	s += fmt.Sprintf("  %-9s  %-8s  %-10s  %-35s  %-20s  %-20s\n",
+		headerStyle.Render("Fase"),
 		headerStyle.Render("Celda"),
 		headerStyle.Render("Sismos"),
 		headerStyle.Render("Estrés Cortical (Valor-b)"),
@@ -46,6 +104,11 @@ func (m Model) renderPredictiveView() string {
 	s += singleDivider
 
 	projections := m.Projections
+
+	// Apply GRAY visibility rule: if any non-GRAY cell exists in GapState,
+	// hide GRAY rows. (Spec §3 — "GRAY cells MUST be hidden when any
+	// non-GRAY cell exists in the snapshot".)
+	hideGray := m.hasNonGrayPhase()
 
 	faults := []string{"Falla de Boconó", "Falla de San Sebastián", "Falla de El Pilar", "Falla Desconocida"}
 	grouped := make(map[string][]alert.FaultProjection)
@@ -63,10 +126,23 @@ func (m Model) renderPredictiveView() string {
 			continue
 		}
 
-		totalDisplayed += len(list)
+		// Filter out GRAY rows when any non-GRAY cell exists in the snapshot
+		displayList := make([]alert.FaultProjection, 0, len(list))
+		for _, p := range list {
+			phase := m.phaseByCell(p.GridCell)
+			if hideGray && phase.Phase == alert.PhaseSilencio {
+				continue
+			}
+			displayList = append(displayList, p)
+		}
+		if len(displayList) == 0 {
+			continue
+		}
+
+		totalDisplayed += len(displayList)
 		s += "\n  " + faultNameStyle.Render("▸ "+strings.ToUpper(fName)) + "\n"
 
-		for _, p := range list {
+		for _, p := range displayList {
 			var bValStr string
 			if p.EventCount >= 5 {
 				bVal := p.BValue
@@ -95,8 +171,11 @@ func (m Model) renderPredictiveView() string {
 				omoriStr = stressNDStyle.Render("N/A")
 			}
 
-			s += fmt.Sprintf("  %-8s  %-10d  %-35s  %-20s  %-20s\n",
-				cellStyle.Render(p.GridCell), p.EventCount, bValStr, bathStr, omoriStr)
+			phase := m.phaseByCell(p.GridCell)
+			badge := renderPhaseBadge(phase)
+
+			s += fmt.Sprintf("  %s  %-8s  %-10d  %-35s  %-20s  %-20s\n",
+				badge, cellStyle.Render(p.GridCell), p.EventCount, bValStr, bathStr, omoriStr)
 		}
 	}
 
@@ -109,6 +188,12 @@ func (m Model) renderPredictiveView() string {
 	s += singleDivider
 
 	legendText := titleStyle.Render("¿CÓMO ENTENDER ESTA INFORMACIÓN SISMOLÓGICA?") + "\n\n" +
+		"• " + headerStyle.Render("Fase de celda (GapAnalyzer):") + " Estado del enjambre en el cuadrante, clasificado en 5 niveles.\n" +
+		"  - " + phaseRedStyle.Render("[RED]    ") + " Precursor: locked + >=3 sismos M>=2.0 en 12h.\n" +
+		"  - " + phaseOrangeStyle.Render("[ORANGE] ") + " Réplicas: M>=4.5 dentro de 14 días (atenuado 7-14d).\n" +
+		"  - " + phaseYellowStyle.Render("[YELLOW] ") + " Atención temprana: locked + 1-2 sismos M>=2.0 en 12h.\n" +
+		"  - " + phaseGrayStyle.Render("[GRAY]   ") + " Silencio sísmico: locked, 0 sismos en 30d (se oculta si hay activas).\n" +
+		"  - " + phaseGreenStyle.Render("[GREEN]  ") + " Estable: sin alerta.\n\n" +
 		"• " + headerStyle.Render("Valor-b (Gutenberg-Richter):") + " Mide la relación entre sismos grandes y chicos. Representa el estrés acumulado.\n" +
 		"  - " + stressHighStyle.Render("Estrés Crítico (<0.70):") + " Alerta de acumulación severa de energía. Peligro de sismo mayor.\n" +
 		"  - " + stressNormalStyle.Render("Estable (~1.00):") + " Liberación normal y equilibrada de energía en la falla.\n" +

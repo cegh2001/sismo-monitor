@@ -29,6 +29,13 @@ type MsgSismo alert.Sismo
 // MsgLog is sent to display a new log line in the TUI console.
 type MsgLog string
 
+// MsgGapState is sent by the coordinator each event cycle with the
+// snapshot of per-cell phase classifications (RED/ORANGE/YELLOW/GRAY/GREEN).
+// Stored on Model.GapState and merged into the predictive view at render time.
+type MsgGapState struct {
+	Phases []alert.CellPhase
+}
+
 // MsgStats is sent to update the dashboard statistic panels.
 type MsgStats struct {
 	TotalEvents      int
@@ -67,6 +74,7 @@ type Model struct {
 	Sismos           []alert.Sismo
 	HistoricalSismos []alert.Sismo
 	Projections      []alert.FaultProjection // Cached projections
+	GapState         []alert.CellPhase       // Per-cell phase snapshot (RED/ORANGE/YELLOW/GRAY/GREEN)
 	Logs             []string
 	Stats            MsgStats
 	Port             string
@@ -315,6 +323,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MsgStats:
 		m.Stats = msg
 		m.statusMsg = "Stats updated"
+		return m, SubscribeToUpdates(m.updateChan)
+
+	case MsgGapState:
+		phases := msg.Phases
+		if phases == nil {
+			phases = []alert.CellPhase{}
+		}
+		m.GapState = phases
 		return m, SubscribeToUpdates(m.updateChan)
 	}
 
