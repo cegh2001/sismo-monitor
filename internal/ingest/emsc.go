@@ -12,6 +12,13 @@ import (
 	"sismo-monitor/internal/log"
 )
 
+
+const (
+	writeWait  = 10 * time.Second
+	readWait   = 60 * time.Second
+	pingPeriod = (readWait * 9) / 10
+)
+
 // EMSCClient handles real-time ingestion from the EMSC WebSocket feed.
 type EMSCClient struct {
 	url            string
@@ -73,9 +80,37 @@ func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo, fastOut 
 		c.log("EMSC WebSocket connected successfully.")
 		backoff = 1 * time.Second // Reset backoff on success
 
+		// Configure deadlines and pong handler
+		conn.SetReadDeadline(time.Now().Add(readWait))
+		conn.SetPongHandler(func(string) error {
+			conn.SetReadDeadline(time.Now().Add(readWait))
+			return nil
+		})
+
+		// Connection-specific context to stop the ping goroutine when the connection exits
+		connCtx, connCancel := context.WithCancel(ctx)
+
+		// Run ping worker goroutine
+		go func() {
+			ticker := time.NewTicker(pingPeriod)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					// Send ping control message
+					if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(writeWait)); err != nil {
+						return
+					}
+				case <-connCtx.Done():
+					return
+				}
+			}
+		}()
+
 		// Run message reading loop
 		errChan := make(chan error, 1)
 		go func() {
+			defer connCancel()
 			defer conn.Close()
 			for {
 				_, message, err := conn.ReadMessage()
@@ -83,6 +118,9 @@ func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo, fastOut 
 					errChan <- err
 					return
 				}
+
+				// Reset read deadline on successful message
+				conn.SetReadDeadline(time.Now().Add(readWait))
 
 				var msg alertMessage
 				if err := json.Unmarshal(message, &msg); err != nil {
@@ -117,9 +155,11 @@ func (c *EMSCClient) Start(ctx context.Context, out chan<- alert.Sismo, fastOut 
 		case <-ctx.Done():
 			c.log("Context cancelled. Closing EMSC connection.")
 			conn.Close()
+			connCancel()
 			return
 		case err := <-errChan:
 			c.log("EMSC connection closed or failed: %v. Retrying...", err)
+			connCancel()
 		}
 	}
 }
