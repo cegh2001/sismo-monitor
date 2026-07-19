@@ -70,6 +70,78 @@ func (n *PushoverNotifier) SendNow(alert Alert) error {
 	return n.send(alert)
 }
 
+// SendSynthesisReport dispatches an LLM narrative report from Gemma 4 via Pushover using HTML formatting.
+func (n *PushoverNotifier) SendSynthesisReport(report SynthesisResponse) error {
+	if n.appToken == "" || n.userKey == "" {
+		return fmt.Errorf("pushover app token or user key missing")
+	}
+
+	title := fmt.Sprintf("[Gemma 4] %s", report.ReportType)
+	if report.Summary != "" {
+		title = fmt.Sprintf("[Gemma 4] %s — %s", report.ReportType, report.Summary)
+		if len(title) > 250 {
+			title = title[:247] + "..."
+		}
+	}
+
+	var msgBuilder strings.Builder
+	msgBuilder.WriteString(report.Body)
+
+	if len(report.Citations) > 0 {
+		msgBuilder.WriteString("\n\n<b>Fuentes verificadas:</b>\n")
+		for _, c := range report.Citations {
+			msgBuilder.WriteString(fmt.Sprintf("<a href=\"%s\">%s</a>\n", c.URL, c.Title))
+		}
+	}
+
+	fullMsg := msgBuilder.String()
+	// Respetar límite de 1024 caracteres de Pushover
+	if len(fullMsg) > 1000 {
+		fullMsg = fullMsg[:970] + "\n… [ver TUI para reporte completo]"
+	}
+
+	data := url.Values{}
+	data.Set("token", n.appToken)
+	data.Set("user", n.userKey)
+	data.Set("title", title)
+	data.Set("message", fullMsg)
+	data.Set("html", "1")
+
+	priority := "0"
+	if report.ReportType == ReportConfirmacion {
+		priority = "1"
+	}
+	data.Set("priority", priority)
+
+	apiURL := n.apiURL
+	if apiURL == "" {
+		apiURL = "https://api.pushover.net/1/messages.json"
+	}
+
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBufferString(data.Encode()))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	resp, err := n.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errData map[string]interface{}
+		_ = json.NewDecoder(resp.Body).Decode(&errData)
+		return fmt.Errorf("pushover API returned status %d: %v", resp.StatusCode, errData)
+	}
+
+	if n.logger != nil {
+		n.logger("Pushover Gemma 4 report sent: %s (%s)", report.ReportType, report.ModelUsed)
+	}
+	return nil
+}
+
 // SetAPIURL overrides the API endpoint. Intended for tests using httptest.
 func (n *PushoverNotifier) SetAPIURL(u string) {
 	n.apiURL = u

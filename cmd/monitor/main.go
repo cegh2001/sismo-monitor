@@ -13,6 +13,7 @@ import (
 	"sismo-monitor/internal/api"
 	"sismo-monitor/internal/config"
 	"sismo-monitor/internal/ingest"
+	"sismo-monitor/internal/llm"
 	"sismo-monitor/internal/tui"
 )
 
@@ -162,6 +163,19 @@ func main() {
 	// Gap-phase coordinator: builds per-cell phase snapshots and emits
 	// MsgGapState to the TUI each event cycle.
 	gapCoord := NewCoordinator(gapAnalyzer, notifier, tuiChan, tuiLog)
+
+	// Initialize Gemma 4 LLM Synthesizer
+	if cfg.GeminiAPIKey != "" {
+		gemma := llm.NewGemmaSynthesizer(cfg.GeminiAPIKey, tuiLog)
+		gapCoord.SetGemmaSynthesizer(gemma)
+		tuiLog("Gemma 4 LLM Synthesizer ENABLED (model=gemma-4-31b-it, search-grounding=true)")
+	} else {
+		tuiLog("Gemma 4 LLM Synthesizer DISABLED (GEMINI_API_KEY not configured)")
+	}
+
+	simServer.SetGemmaAnalyzeHandler(func() {
+		gapCoord.TriggerManualAnalysis(ctx)
+	})
 
 	// Coordinator processing loop
 	go func() {

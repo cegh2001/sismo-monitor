@@ -203,8 +203,9 @@ func (m Model) renderPredictiveView() string {
 		"• " + headerStyle.Render("Ley de Omori:") + " Estima la cantidad de réplicas probables a ocurrir en las próximas 24 horas."
 
 	s += legendBoxStyle.Render(legendText) + "\n"
+
 	s += singleDivider
-	s += "  [p] Volver al panel de monitoreo | [q] Salir\n"
+	s += "  [g] Análisis Gemma 4 | [p] Volver al panel de monitoreo | [q] Salir\n"
 	s += doubleDivider
 	return s
 }

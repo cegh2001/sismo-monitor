@@ -11,6 +11,7 @@ import (
 type Config struct {
 	PushoverAppToken  string
 	PushoverUserKey   string
+	GeminiAPIKey      string
 	Port              string
 	USGSRealtimeURL   string
 	USGSHistoricalURL string
@@ -107,6 +108,7 @@ func Load() *Config {
 	return &Config{
 		PushoverAppToken:           os.Getenv("PUSHOVER_APP_TOKEN"),
 		PushoverUserKey:            os.Getenv("PUSHOVER_USER_KEY"),
+		GeminiAPIKey:               os.Getenv("GEMINI_API_KEY"),
 		Port:                       port,
 		USGSRealtimeURL:            usgsRealtime,
 		USGSHistoricalURL:          usgsHistorical,

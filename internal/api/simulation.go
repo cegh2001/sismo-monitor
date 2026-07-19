@@ -16,10 +16,11 @@ import (
 
 // SimulationServer exposes an HTTP endpoint to inject mock seismic events.
 type SimulationServer struct {
-	port        string
-	out         chan<- alert.Sismo
-	logger      func(string, ...interface{})
-	gapAnalyzer *alert.GapAnalyzer
+	port           string
+	out            chan<- alert.Sismo
+	logger         func(string, ...interface{})
+	gapAnalyzer    *alert.GapAnalyzer
+	onGemmaAnalyze func()
 }
 
 // NewSimulationServer initializes a SimulationServer.
@@ -30,6 +31,11 @@ func NewSimulationServer(port string, out chan<- alert.Sismo, gapAnalyzer *alert
 		logger:      logger,
 		gapAnalyzer: gapAnalyzer,
 	}
+}
+
+// SetGemmaAnalyzeHandler registers a callback invoked when POST /api/gemma/analyze is called.
+func (s *SimulationServer) SetGemmaAnalyzeHandler(h func()) {
+	s.onGemmaAnalyze = h
 }
 
 // TestAlertPayload defines the fields accepted by POST /test-alert.
@@ -47,6 +53,7 @@ type TestAlertPayload struct {
 func (s *SimulationServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/test-alert", s.handleTestAlert)
+	mux.HandleFunc("/api/gemma/analyze", s.handleGemmaAnalyze)
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/ready", s.handleReady)
 
@@ -205,4 +212,25 @@ func (s *SimulationServer) handleReady(w http.ResponseWriter, r *http.Request) {
 
 func (s *SimulationServer) log(format string, args ...interface{}) {
 	log.Log(s.logger, format, args...)
+}
+
+func (s *SimulationServer) handleGemmaAnalyze(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed. Use POST.", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if s.onGemmaAnalyze != nil {
+		s.log("POST /api/gemma/analyze received: triggering manual Gemma 4 synthesis")
+		go s.onGemmaAnalyze()
+	} else {
+		s.log("POST /api/gemma/analyze received but no handler configured")
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"status":  "triggered",
+		"message": "Manual Gemma 4 analysis requested",
+	})
 }

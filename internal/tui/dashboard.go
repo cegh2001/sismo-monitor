@@ -29,6 +29,17 @@ type MsgSismo alert.Sismo
 // MsgLog is sent to display a new log line in the TUI console.
 type MsgLog string
 
+// MsgGemmaReport is sent when a new LLM narrative report from Gemma 4 is available.
+type MsgGemmaReport struct {
+	Report alert.SynthesisResponse
+}
+
+// MsgGemmaStatus is sent to update the TUI status on Gemma 4 generation state (generating, success, error).
+type MsgGemmaStatus struct {
+	Generating bool
+	Message    string
+}
+
 // MsgGapState is sent by the coordinator each event cycle with the
 // snapshot of per-cell phase classifications (RED/ORANGE/YELLOW/GRAY/GREEN).
 // Stored on Model.GapState and merged into the predictive view at render time.
@@ -62,6 +73,7 @@ type ViewType int
 const (
 	ViewDashboard ViewType = iota
 	ViewPredictive
+	ViewGemma
 
 	// simCooldown prevents spurious terminal input (common on Windows) from
 	// accidentally triggering simulations during program startup.
@@ -75,6 +87,7 @@ type Model struct {
 	HistoricalSismos []alert.Sismo
 	Projections      []alert.FaultProjection // Cached projections
 	GapState         []alert.CellPhase       // Per-cell phase snapshot (RED/ORANGE/YELLOW/GRAY/GREEN)
+	GemmaReports     []alert.SynthesisResponse // LLM narrative reports from Gemma 4
 	Logs             []string
 	Stats            MsgStats
 	Port             string
@@ -82,10 +95,13 @@ type Model struct {
 	logScroll        int
 	sismoScroll      int
 	predictiveScroll int
+	gemmaScroll      int
 	termHeight       int
 	termWidth        int
 	currentView      ViewType
 	startTime        time.Time
+	gemmaGenerating  bool
+	gemmaError       string
 }
 
 // NewModel initializes the Bubbletea model.
@@ -138,6 +154,46 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.currentView == ViewGemma {
+			switch msg.String() {
+			case "q", "ctrl+c":
+				return m, tea.Quit
+			case "d":
+				m.currentView = ViewDashboard
+				m.statusMsg = "Switched to Main Dashboard"
+				return m, nil
+			case "p":
+				m.currentView = ViewPredictive
+				m.predictiveScroll = 0
+				m.statusMsg = "Switched to Projections & Crustal Stress Monitor"
+				return m, nil
+			case "g":
+				if time.Since(m.startTime) < simCooldown {
+					m.gemmaError = "Cooldown activo — espere 2s después del inicio"
+					return m, nil
+				}
+				m.gemmaError = ""
+				m.gemmaGenerating = true
+				m.statusMsg = "Solicitando análisis sismológico a Gemma 4 (Google Search Grounded)..."
+				return m, triggerGemmaAnalysis(m.Port)
+			case "up":
+				maxScroll := len(m.GemmaReports) - 1
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.gemmaScroll < maxScroll {
+					m.gemmaScroll++
+				}
+				return m, nil
+			case "down":
+				if m.gemmaScroll > 0 {
+					m.gemmaScroll--
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+
 		if m.currentView == ViewPredictive {
 			switch msg.String() {
 			case "q", "ctrl+c":
@@ -168,6 +224,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "home":
 				m.predictiveScroll = 0
 				return m, nil
+			case "g":
+				if time.Since(m.startTime) < simCooldown {
+					m.statusMsg = "Startup cooldown active — manual Gemma analysis disabled for 2s"
+					return m, nil
+				}
+				m.currentView = ViewGemma
+				m.gemmaScroll = 0
+				m.gemmaError = ""
+				m.gemmaGenerating = true
+				m.statusMsg = "Solicitando análisis sismológico a Gemma 4 (Google Search Grounded)..."
+				return m, triggerGemmaAnalysis(m.Port)
 			case "end":
 				// Calculate bottom position from actual content
 				content := m.renderPredictiveView()
@@ -212,6 +279,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.statusMsg = "Triggering instability test alerts (5 hist, 3 swarm)..."
 			return m, triggerInstabilitySimulation(m.Port)
+		case "g":
+			if time.Since(m.startTime) < simCooldown {
+				m.statusMsg = "Startup cooldown active — manual Gemma analysis disabled for 2s"
+				return m, nil
+			}
+			m.currentView = ViewGemma
+			m.gemmaScroll = 0
+			m.gemmaError = ""
+			m.gemmaGenerating = true
+			m.statusMsg = "Solicitando análisis sismológico a Gemma 4 (Google Search Grounded)..."
+			return m, triggerGemmaAnalysis(m.Port)
 		case "p":
 			m.currentView = ViewPredictive
 			m.predictiveScroll = 0
@@ -258,6 +336,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+
+	case MsgGemmaReport:
+		m.GemmaReports = append(m.GemmaReports, msg.Report)
+		if len(m.GemmaReports) > 20 {
+			m.GemmaReports = m.GemmaReports[len(m.GemmaReports)-20:]
+		}
+		m.gemmaGenerating = false
+		m.gemmaError = ""
+		m.statusMsg = fmt.Sprintf("✅ Reporte Gemma 4 ([%s]) recibido", msg.Report.ReportType)
+		return m, SubscribeToUpdates(m.updateChan)
+
+	case MsgGemmaStatus:
+		m.gemmaGenerating = msg.Generating
+		if msg.Message != "" {
+			m.statusMsg = msg.Message
+			if strings.Contains(msg.Message, "❌") || strings.Contains(msg.Message, "Error") {
+				m.gemmaError = msg.Message
+			}
+		}
+		return m, SubscribeToUpdates(m.updateChan)
 
 	case MsgSismo:
 		found := false
@@ -403,6 +501,30 @@ func triggerInstabilitySimulation(port string) tea.Cmd {
 	}
 }
 
+func triggerGemmaAnalysis(port string) tea.Cmd {
+	return func() tea.Msg {
+		url := fmt.Sprintf("http://localhost:%s/api/gemma/analyze", port)
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer([]byte("{}")))
+		if err != nil {
+			return MsgGemmaStatus{
+				Generating: false,
+				Message:    fmt.Sprintf("❌ Error al conectar con API Gemma: %v", err),
+			}
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return MsgGemmaStatus{
+				Generating: false,
+				Message:    fmt.Sprintf("❌ Solicitud a Gemma rechazada (HTTP %d)", resp.StatusCode),
+			}
+		}
+		return MsgGemmaStatus{
+			Generating: true,
+			Message:    "🤖 Generando análisis sismológico con Gemma 4 (Google Search Grounding)... Por favor espere.",
+		}
+	}
+}
+
 // View outputs the textual representation of the dashboard.
 func (m Model) View() string {
 	if m.currentView == ViewPredictive {
@@ -437,6 +559,10 @@ func (m Model) View() string {
 		}
 
 		return strings.Join(visible, "\n")
+	}
+
+	if m.currentView == ViewGemma {
+		return m.renderGemmaView()
 	}
 
 	var s string
@@ -514,7 +640,7 @@ func (m Model) View() string {
 		}
 	}
 	s += singleDivider
-	s += "  [q] Quit | [t] Trigger Critical | [s] Trigger Swarm | [i] Trigger Instability | [p] Projections\n"
+	s += "  [q] Quit | [g] Análisis Gemma 4 | [t] Trigger Critical | [s] Trigger Swarm | [i] Trigger Instability | [p] Projections\n"
 	s += "  [Arrows] Up/Down: Scroll Logs | Left/Right: Scroll Sismos\n"
 	s += doubleDivider
 	return s

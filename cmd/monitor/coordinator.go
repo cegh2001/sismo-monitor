@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"sismo-monitor/internal/alert"
+	"sismo-monitor/internal/llm"
 	"sismo-monitor/internal/tui"
 )
 
@@ -19,6 +21,7 @@ const gapPhaseCooldown = 30 * time.Minute
 type Coordinator struct {
 	gapAnalyzer *alert.GapAnalyzer
 	notifier    alert.Notifier
+	gemma       *llm.GemmaSynthesizer
 	tuiChan     chan<- tea.Msg
 	log         func(string, ...interface{})
 
@@ -41,6 +44,11 @@ func NewCoordinator(gap *alert.GapAnalyzer, notif alert.Notifier, tuiChan chan<-
 		prevState:   make(map[string]alert.SwarmPhase),
 		cooldown:    make(map[string]time.Time),
 	}
+}
+
+// SetGemmaSynthesizer configures the LLM narrative synthesizer component.
+func (c *Coordinator) SetGemmaSynthesizer(g *llm.GemmaSynthesizer) {
+	c.gemma = g
 }
 
 // BuildGapSnapshot computes the per-cell phase snapshot for the current
@@ -140,6 +148,32 @@ func (c *Coordinator) EmitGapSnapshot(ctx context.Context, now time.Time) []aler
 				Level: alert.LevelInstability,
 			})
 			c.cooldown[ph.GridCell] = now
+
+			if c.gemma != nil {
+				go func(cell string, prevPhase, currPhase alert.SwarmPhase, mainshock alert.Sismo, evts []alert.Sismo) {
+					proj := alert.AnalyzeGridCell(cell, evts, now)
+					req := llm.SynthesisRequest{
+						TriggerType:    fmt.Sprintf("TRANSICION_FASE_%v_A_%v", prevPhase, currPhase),
+						FaultName:      alert.GetFaultName(mainshock.Latitude, mainshock.Longitude),
+						CellID:         cell,
+						BValue:         proj.BValue,
+						WeightedEnergy: proj.WeightedEnergy,
+						DynamicRate:    proj.DynamicRate,
+						Mainshock:      mainshock,
+						RecentEvents:   evts,
+						Phase:          currPhase,
+					}
+					resp, err := c.gemma.Synthesize(ctx, req)
+					if err != nil {
+						c.log("Gemma 4 synthesis failed for cell %s: %v", cell, err)
+						return
+					}
+					c.sendTui(tui.MsgGemmaReport{Report: resp})
+					if pn, ok := c.notifier.(*alert.PushoverNotifier); ok {
+						_ = pn.SendSynthesisReport(resp)
+					}
+				}(ph.GridCell, prev, ph.Phase, payload, events)
+			}
 		}
 		c.prevState[ph.GridCell] = ph.Phase
 	}
@@ -164,4 +198,93 @@ func lastMostRelevantEvent(events []alert.Sismo) alert.Sismo {
 		}
 	}
 	return best
+}
+
+// TriggerManualAnalysis forces an immediate Gemma 4 natural language analysis
+// of the active seismic state and pushes the narrative report to TUI and Pushover.
+func (c *Coordinator) TriggerManualAnalysis(ctx context.Context) {
+	if c.gemma == nil {
+		c.log("Manual Gemma 4 analysis requested, but GemmaSynthesizer is disabled (GEMINI_API_KEY missing)")
+		c.sendTui(tui.MsgGemmaStatus{
+			Generating: false,
+			Message:    "❌ No se puede generar análisis: GEMINI_API_KEY no configurada en .env",
+		})
+		return
+	}
+
+	now := time.Now()
+	snapshot := c.BuildGapSnapshot(now)
+
+	var targetCell alert.CellPhase
+	found := false
+	for _, ph := range snapshot {
+		if ph.Phase != alert.PhaseEstable && ph.Phase != alert.PhaseSilencio {
+			targetCell = ph
+			found = true
+			break
+		}
+	}
+	if !found && len(snapshot) > 0 {
+		targetCell = snapshot[0]
+	}
+
+	cellID := targetCell.GridCell
+	if cellID == "" {
+		cellID = "G_22_12" // Fallback to El Pilar active cell
+	}
+
+	events := c.gapAnalyzer.GetCellEvents(cellID, now.Add(-30*24*time.Hour))
+	mainshock := lastMostRelevantEvent(events)
+	if mainshock.ID == "" {
+		mainshock = alert.Sismo{
+			ID:        "manual-analysis",
+			Source:    "TUI-Manual",
+			GridCell:  cellID,
+			Magnitude: 3.6,
+			Depth:     10.0,
+			Latitude:  10.5,
+			Longitude: -64.2,
+			Location:  "Falla de El Pilar (Análisis Manual)",
+			Time:      now,
+		}
+	}
+
+	go func() {
+		var allSismos []alert.Sismo
+		for _, cell := range c.gapAnalyzer.GetAllCells() {
+			allSismos = append(allSismos, c.gapAnalyzer.GetCellEvents(cell, now.Add(-365*24*time.Hour))...)
+		}
+		allProjections := alert.ComputeProjections(allSismos, now)
+
+		proj := alert.AnalyzeGridCell(cellID, events, now)
+		req := llm.SynthesisRequest{
+			TriggerType:             "ANALISIS_MANUAL_TUI",
+			FaultName:               alert.GetFaultName(mainshock.Latitude, mainshock.Longitude),
+			CellID:                  cellID,
+			BValue:                  proj.BValue,
+			WeightedEnergy:          proj.WeightedEnergy,
+			DynamicRate:             proj.DynamicRate,
+			Mainshock:               mainshock,
+			RecentEvents:            events,
+			Phase:                   targetCell.Phase,
+			RecentHistoricalContext: "Análisis manual solicitado por el usuario en la TUI. Analizar panorama tectónico actual, doblete histórico del 24 de junio de 2026 e inestabilidad cortical.",
+			AllProjections:          allProjections,
+			AllPhases:               snapshot,
+			LiveSismos:              events,
+		}
+		c.log("Triggering manual Gemma 4 analysis for cell %s...", cellID)
+		resp, err := c.gemma.Synthesize(ctx, req)
+		if err != nil {
+			c.log("Manual Gemma 4 analysis failed: %v", err)
+			c.sendTui(tui.MsgGemmaStatus{
+				Generating: false,
+				Message:    fmt.Sprintf("❌ Error al generar análisis con Gemma 4: %v", err),
+			})
+			return
+		}
+		c.sendTui(tui.MsgGemmaReport{Report: resp})
+		if pn, ok := c.notifier.(*alert.PushoverNotifier); ok {
+			_ = pn.SendSynthesisReport(resp)
+		}
+	}()
 }

@@ -19,6 +19,7 @@ func clearFastPathEnv(t *testing.T) {
 		"USGS_HISTORICAL_URL",
 		"PUSHOVER_APP_TOKEN",
 		"PUSHOVER_USER_KEY",
+		"GEMINI_API_KEY",
 	}
 	for _, e := range envs {
 		_ = os.Unsetenv(e)
@@ -90,6 +91,23 @@ func TestFastPathEnvOverride(t *testing.T) {
 	want := []string{"10.48,-66.90,Caracas", "10.60,-66.93,LaGuaira"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Expected EMSCFastPathFamilyLocations %v, got %v", want, got)
+	}
+}
+
+func TestGeminiAPIKey(t *testing.T) {
+	clearFastPathEnv(t)
+	t.Setenv("GEMINI_API_KEY", "test-gemini-key-12345")
+
+	cfg := Load()
+	if cfg.GeminiAPIKey != "test-gemini-key-12345" {
+		t.Errorf("Expected GeminiAPIKey 'test-gemini-key-12345', got %q", cfg.GeminiAPIKey)
+	}
+
+	// Verify empty when not set
+	clearFastPathEnv(t)
+	cfg2 := Load()
+	if cfg2.GeminiAPIKey != "" {
+		t.Errorf("Expected empty GeminiAPIKey when not set, got %q", cfg2.GeminiAPIKey)
 	}
 }
 
