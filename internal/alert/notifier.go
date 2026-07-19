@@ -199,7 +199,10 @@ func (n *PushoverNotifier) send(alert Alert) error {
 	}
 
 	if n.appToken == "" || n.userKey == "" {
-		if n.logger != nil {
+		isSimulated := strings.Contains(alert.Sismo.Source, "Simulation") ||
+			alert.Sismo.Source == "TUI-Manual" ||
+			strings.HasPrefix(alert.Sismo.ID, "sim-")
+		if n.logger != nil && isSimulated {
 			var etas string
 			if alert.Sismo.Distance > 0 {
 				etas = etaText

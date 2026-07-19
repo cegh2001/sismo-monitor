@@ -169,8 +169,8 @@ func (c *Coordinator) EmitGapSnapshot(ctx context.Context, now time.Time) []aler
 						return
 					}
 					c.sendTui(tui.MsgGemmaReport{Report: resp})
-					if pn, ok := c.notifier.(*alert.PushoverNotifier); ok {
-						_ = pn.SendSynthesisReport(resp)
+					if rn, ok := c.notifier.(interface{ SendSynthesisReport(alert.SynthesisResponse) error }); ok {
+						_ = rn.SendSynthesisReport(resp)
 					}
 				}(ph.GridCell, prev, ph.Phase, payload, events)
 			}
@@ -284,8 +284,8 @@ func (c *Coordinator) TriggerManualAnalysis(ctx context.Context) {
 			return
 		}
 		c.sendTui(tui.MsgGemmaReport{Report: resp})
-		if pn, ok := c.notifier.(*alert.PushoverNotifier); ok {
-			_ = pn.SendSynthesisReport(resp)
+		if rn, ok := c.notifier.(interface{ SendSynthesisReport(alert.SynthesisResponse) error }); ok {
+			_ = rn.SendSynthesisReport(resp)
 		}
 	}()
 }

@@ -27,12 +27,17 @@ type FamilyLocation struct {
 // above the threshold, and rate-limit cooldown elapsed. The notifier's own
 // rate limiter is bypassed — FastPath enforces its own cooldown so early
 // warnings are not throttled by pipeline traffic.
+// FastPathNotifier defines the interface required by FastPath for immediate dispatch.
+type FastPathNotifier interface {
+	SendNow(alert alert.Alert) error
+}
+
 type FastPath struct {
 	enabled      bool
 	magThreshold float64
 	rateLimit    time.Duration
 	familyLocs   []FamilyLocation
-	notifier     *alert.PushoverNotifier
+	notifier     FastPathNotifier
 	logger       func(string, ...interface{})
 
 	mu       sync.Mutex
@@ -85,7 +90,7 @@ func parseFamilyLocations(raw string) []FamilyLocation {
 // NewFastPath constructs a FastPath from the supplied notifier. The notifier
 // must be non-nil; FastPath relies on SendNow() to bypass the queue and the
 // notifier's rate limiter.
-func NewFastPath(enabled bool, magThreshold float64, rateLimit time.Duration, familyLocs []FamilyLocation, notifier *alert.PushoverNotifier, logger func(string, ...interface{})) *FastPath {
+func NewFastPath(enabled bool, magThreshold float64, rateLimit time.Duration, familyLocs []FamilyLocation, notifier FastPathNotifier, logger func(string, ...interface{})) *FastPath {
 	return &FastPath{
 		enabled:      enabled,
 		magThreshold: magThreshold,

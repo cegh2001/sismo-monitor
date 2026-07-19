@@ -51,7 +51,18 @@ func main() {
 
 	// Initialize Alert Engine
 	swarmQueue := alert.NewSwarmQueue()
-	notifier := alert.NewPushoverNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey, tuiLog)
+	var notifier interface {
+		alert.Notifier
+		SendNow(alert.Alert) error
+	}
+
+	if cfg.AlertProvider == "gotify" {
+		notifier = alert.NewGotifyNotifier(cfg.GotifyURL, cfg.GotifyAppToken, tuiLog)
+		tuiLog("Notification Provider: Gotify (%s)", cfg.GotifyURL)
+	} else {
+		notifier = alert.NewPushoverNotifier(cfg.PushoverAppToken, cfg.PushoverUserKey, tuiLog)
+		tuiLog("Notification Provider: Pushover")
+	}
 
 	// Initialize Deduplicator
 	deduplicator := alert.NewDeduplicator(120*time.Second, 50.0)

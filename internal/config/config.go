@@ -11,6 +11,9 @@ import (
 type Config struct {
 	PushoverAppToken  string
 	PushoverUserKey   string
+	AlertProvider     string // "gotify", "pushover", or "none"
+	GotifyURL         string
+	GotifyAppToken    string
 	GeminiAPIKey      string
 	Port              string
 	USGSRealtimeURL   string
@@ -105,16 +108,30 @@ func Load() *Config {
 		}
 	}
 
+	alertProvider := strings.ToLower(strings.TrimSpace(os.Getenv("ALERT_PROVIDER")))
+	gotifyURL := os.Getenv("GOTIFY_URL")
+	gotifyToken := os.Getenv("GOTIFY_APP_TOKEN")
+	if alertProvider == "" {
+		if gotifyURL != "" || gotifyToken != "" {
+			alertProvider = "gotify"
+		} else {
+			alertProvider = "pushover"
+		}
+	}
+
 	return &Config{
-		PushoverAppToken:           os.Getenv("PUSHOVER_APP_TOKEN"),
-		PushoverUserKey:            os.Getenv("PUSHOVER_USER_KEY"),
-		GeminiAPIKey:               os.Getenv("GEMINI_API_KEY"),
-		Port:                       port,
-		USGSRealtimeURL:            usgsRealtime,
-		USGSHistoricalURL:          usgsHistorical,
-		EMSCFastPathEnabled:        fastPathEnabled,
-		EMSCFastPathMagThreshold:   fastPathMagThreshold,
-		EMSCFastPathRateLimitSec:   fastPathRateLimitSec,
+		PushoverAppToken:            os.Getenv("PUSHOVER_APP_TOKEN"),
+		PushoverUserKey:             os.Getenv("PUSHOVER_USER_KEY"),
+		AlertProvider:              alertProvider,
+		GotifyURL:                  gotifyURL,
+		GotifyAppToken:             gotifyToken,
+		GeminiAPIKey:                os.Getenv("GEMINI_API_KEY"),
+		Port:                        port,
+		USGSRealtimeURL:             usgsRealtime,
+		USGSHistoricalURL:           usgsHistorical,
+		EMSCFastPathEnabled:         fastPathEnabled,
+		EMSCFastPathMagThreshold:    fastPathMagThreshold,
+		EMSCFastPathRateLimitSec:    fastPathRateLimitSec,
 		EMSCFastPathFamilyLocations: fastPathFamilyLocations,
 	}
 }
