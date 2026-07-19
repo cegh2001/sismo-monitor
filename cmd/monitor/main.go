@@ -57,6 +57,9 @@ func main() {
 	}
 
 	if cfg.AlertProvider == "gotify" {
+		if err := alert.EnsureGotifyServerRunning(ctx, cfg.GotifyURL, tuiLog); err != nil {
+			tuiLog("Gotify Auto-Runner Warning: %v", err)
+		}
 		notifier = alert.NewGotifyNotifier(cfg.GotifyURL, cfg.GotifyAppToken, tuiLog)
 		tuiLog("Notification Provider: Gotify (%s)", cfg.GotifyURL)
 	} else {

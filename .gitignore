@@ -1,10 +1,11 @@
-# Binaries
+# Binaries and runtime data
 *_bin
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+bin/
 
 # Test binary, built with `go test -c`
 *.test
@@ -12,18 +13,13 @@
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
-# Dependency directories (only needed if you use local vendor)
-# vendor/
-
 # OS metadata files
 .DS_Store
 Thumbs.db
 
-# Local database files
+# Local database files and credentials
 data/
 run.ps1
 .env
-
-
-
 .tokensave
+

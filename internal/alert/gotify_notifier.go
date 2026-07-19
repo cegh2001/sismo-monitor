@@ -22,6 +22,9 @@ type GotifyNotifier struct {
 
 // NewGotifyNotifier initializes a GotifyNotifier.
 func NewGotifyNotifier(serverURL, appToken string, logger func(string, ...interface{})) *GotifyNotifier {
+	if serverURL == "" {
+		serverURL = "http://localhost:8383"
+	}
 	serverURL = strings.TrimRight(serverURL, "/")
 	return &GotifyNotifier{
 		serverURL:         serverURL,
