@@ -40,6 +40,16 @@ type MsgGemmaStatus struct {
 	Message    string
 }
 
+var gemmaSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+type MsgGemmaSpinnerTick struct{}
+
+func tickGemmaSpinner() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg {
+		return MsgGemmaSpinnerTick{}
+	})
+}
+
 // MsgGapState is sent by the coordinator each event cycle with the
 // snapshot of per-cell phase classifications (RED/ORANGE/YELLOW/GRAY/GREEN).
 // Stored on Model.GapState and merged into the predictive view at render time.
@@ -95,13 +105,16 @@ type Model struct {
 	logScroll        int
 	sismoScroll      int
 	predictiveScroll int
-	gemmaScroll      int
-	termHeight       int
-	termWidth        int
-	currentView      ViewType
-	startTime        time.Time
-	gemmaGenerating  bool
-	gemmaError       string
+	gemmaScroll         int
+	gemmaSelectedReport int
+	gemmaBodyScroll     int
+	gemmaSpinnerFrame   int
+	termHeight          int
+	termWidth           int
+	currentView         ViewType
+	startTime           time.Time
+	gemmaGenerating     bool
+	gemmaError          string
 }
 
 // NewModel initializes the Bubbletea model.
@@ -172,23 +185,58 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.gemmaError = "Cooldown activo — espere 2s después del inicio"
 					return m, nil
 				}
+				if m.gemmaGenerating {
+					m.statusMsg = "⚠️ Generación en curso. Por favor espere..."
+					return m, nil
+				}
 				m.gemmaError = ""
 				m.gemmaGenerating = true
+				m.gemmaSpinnerFrame = 0
 				m.statusMsg = "Solicitando análisis sismológico a Gemma 4 (Google Search Grounded)..."
-				return m, triggerGemmaAnalysis(m.Port)
-			case "up":
-				maxScroll := len(m.GemmaReports) - 1
-				if maxScroll < 0 {
-					maxScroll = 0
-				}
-				if m.gemmaScroll < maxScroll {
-					m.gemmaScroll++
+				return m, tea.Batch(triggerGemmaAnalysis(m.Port), tickGemmaSpinner())
+			case "left", "h", "[":
+				if len(m.GemmaReports) > 0 {
+					m.gemmaSelectedReport--
+					if m.gemmaSelectedReport < 0 {
+						m.gemmaSelectedReport = 0
+					}
+					m.gemmaBodyScroll = 0
 				}
 				return m, nil
-			case "down":
-				if m.gemmaScroll > 0 {
-					m.gemmaScroll--
+			case "right", "l", "]":
+				if len(m.GemmaReports) > 0 {
+					m.gemmaSelectedReport++
+					if m.gemmaSelectedReport >= len(m.GemmaReports) {
+						m.gemmaSelectedReport = len(m.GemmaReports) - 1
+					}
+					m.gemmaBodyScroll = 0
 				}
+				return m, nil
+			case "tab":
+				if len(m.GemmaReports) > 0 {
+					m.gemmaSelectedReport = (m.gemmaSelectedReport + 1) % len(m.GemmaReports)
+					m.gemmaBodyScroll = 0
+				}
+				return m, nil
+			case "up", "k":
+				if m.gemmaBodyScroll > 0 {
+					m.gemmaBodyScroll--
+				}
+				return m, nil
+			case "down", "j":
+				m.gemmaBodyScroll++
+				return m, nil
+			case "pgup", "b":
+				m.gemmaBodyScroll -= 8
+				if m.gemmaBodyScroll < 0 {
+					m.gemmaBodyScroll = 0
+				}
+				return m, nil
+			case "pgdown", "f", "space":
+				m.gemmaBodyScroll += 8
+				return m, nil
+			case "home":
+				m.gemmaBodyScroll = 0
 				return m, nil
 			}
 			return m, nil
@@ -337,11 +385,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+	case MsgGemmaSpinnerTick:
+		if m.gemmaGenerating {
+			m.gemmaSpinnerFrame = (m.gemmaSpinnerFrame + 1) % len(gemmaSpinnerFrames)
+			return m, tickGemmaSpinner()
+		}
+		return m, nil
+
 	case MsgGemmaReport:
 		m.GemmaReports = append(m.GemmaReports, msg.Report)
 		if len(m.GemmaReports) > 20 {
 			m.GemmaReports = m.GemmaReports[len(m.GemmaReports)-20:]
 		}
+		m.gemmaSelectedReport = len(m.GemmaReports) - 1
+		m.gemmaBodyScroll = 0
 		m.gemmaGenerating = false
 		m.gemmaError = ""
 		m.statusMsg = fmt.Sprintf("✅ Reporte Gemma 4 ([%s]) recibido", msg.Report.ReportType)
@@ -353,7 +410,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = msg.Message
 			if strings.Contains(msg.Message, "❌") || strings.Contains(msg.Message, "Error") {
 				m.gemmaError = msg.Message
+				m.gemmaGenerating = false
 			}
+		}
+		if m.gemmaGenerating {
+			return m, tea.Batch(SubscribeToUpdates(m.updateChan), tickGemmaSpinner())
 		}
 		return m, SubscribeToUpdates(m.updateChan)
 

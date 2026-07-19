@@ -13,7 +13,7 @@ import (
 const (
 	DefaultModelName = "gemma-4-31b-it"
 	CellCooldown     = 10 * time.Minute
-	GlobalCooldown   = 3 * time.Second
+	GlobalCooldown   = 10 * time.Second
 	MaxDailyReports  = 50
 )
 
@@ -70,7 +70,7 @@ func (g *GemmaSynthesizer) initClientLocked(ctx context.Context) error {
 }
 
 // checkRateLimit checks cell cooldown, global cooldown, and daily limits.
-func (g *GemmaSynthesizer) checkRateLimit(cellID string, now time.Time) error {
+func (g *GemmaSynthesizer) checkRateLimit(cellID string, isManual bool, now time.Time) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
@@ -85,9 +85,11 @@ func (g *GemmaSynthesizer) checkRateLimit(cellID string, now time.Time) error {
 		return fmt.Errorf("daily report limit reached (%d/%d)", g.dailyCount, MaxDailyReports)
 	}
 
-	if last, found := g.cellLastSent[cellID]; found {
-		if now.Sub(last) < CellCooldown {
-			return fmt.Errorf("cell %s in cooldown (remaining: %v)", cellID, CellCooldown-now.Sub(last))
+	if !isManual {
+		if last, found := g.cellLastSent[cellID]; found {
+			if now.Sub(last) < CellCooldown {
+				return fmt.Errorf("cell %s in cooldown (remaining: %v)", cellID, CellCooldown-now.Sub(last))
+			}
 		}
 	}
 
@@ -112,7 +114,7 @@ func (g *GemmaSynthesizer) updateRateLimit(cellID string, now time.Time) {
 func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest) (SynthesisResponse, error) {
 	now := time.Now()
 
-	if err := g.checkRateLimit(req.CellID, now); err != nil {
+	if err := g.checkRateLimit(req.CellID, req.IsManual, now); err != nil {
 		return SynthesisResponse{}, fmt.Errorf("rate limit: %w", err)
 	}
 
@@ -151,6 +153,17 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 
 	resp, err := client.Models.GenerateContent(ctx, modelName, genai.Text(promptText), config)
 	if err != nil {
+		errStr := err.Error()
+		if strings.Contains(errStr, "RESOURCE_EXHAUSTED") || strings.Contains(errStr, "429") {
+			retryMsg := "⏳ Límite de cuota API excedido (Google GenAI Rate Limit 429)."
+			if idx := strings.Index(errStr, "Please retry in "); idx != -1 {
+				rest := errStr[idx+len("Please retry in "):]
+				if endIdx := strings.IndexAny(rest, ".,\n"); endIdx != -1 {
+					retryMsg = fmt.Sprintf("⏳ Cuota de Google GenAI superada (RPM). Espere %s antes de solicitar otro análisis.", rest[:endIdx])
+				}
+			}
+			return SynthesisResponse{}, fmt.Errorf("%s", retryMsg)
+		}
 		return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", err)
 	}
 

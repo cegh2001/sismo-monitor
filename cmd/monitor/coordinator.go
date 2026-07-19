@@ -271,6 +271,7 @@ func (c *Coordinator) TriggerManualAnalysis(ctx context.Context) {
 			AllProjections:          allProjections,
 			AllPhases:               snapshot,
 			LiveSismos:              events,
+			IsManual:                true,
 		}
 		c.log("Triggering manual Gemma 4 analysis for cell %s...", cellID)
 		resp, err := c.gemma.Synthesize(ctx, req)

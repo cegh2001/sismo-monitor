@@ -46,26 +46,31 @@ func TestRateLimitLogic(t *testing.T) {
 	synth := NewGemmaSynthesizer("dummy-key", nil)
 	now := time.Now()
 
-	// First attempt should pass check
-	if err := synth.checkRateLimit("G_1_1", now); err != nil {
+	// First attempt should pass check (isManual = false)
+	if err := synth.checkRateLimit("G_1_1", false, now); err != nil {
 		t.Fatalf("Expected no error on first check, got: %v", err)
 	}
 
 	// Record success
 	synth.updateRateLimit("G_1_1", now)
 
-	// Second immediate check for same cell must fail due to cell cooldown
-	if err := synth.checkRateLimit("G_1_1", now.Add(1*time.Second)); err == nil {
+	// Second immediate check for same cell must fail due to cell cooldown when isManual = false
+	if err := synth.checkRateLimit("G_1_1", false, now.Add(1*time.Second)); err == nil {
 		t.Errorf("Expected error on immediate repeat for same cell, got nil")
 	}
 
-	// Check for a different cell immediately must fail due to global cooldown (3s)
-	if err := synth.checkRateLimit("G_2_2", now.Add(1*time.Second)); err == nil {
+	// Manual request (isManual = true) for same cell must BYPASS cell cooldown (after 11s global cooldown)
+	if err := synth.checkRateLimit("G_1_1", true, now.Add(11*time.Second)); err != nil {
+		t.Errorf("Expected manual trigger to bypass cell cooldown, got: %v", err)
+	}
+
+	// Check for a different cell immediately must fail due to global cooldown (10s)
+	if err := synth.checkRateLimit("G_2_2", false, now.Add(1*time.Second)); err == nil {
 		t.Errorf("Expected error on global cooldown, got nil")
 	}
 
-	// Check after global cooldown passes (4s) for new cell must succeed
-	if err := synth.checkRateLimit("G_2_2", now.Add(4*time.Second)); err != nil {
+	// Check after global cooldown passes (11s) for new cell must succeed
+	if err := synth.checkRateLimit("G_2_2", false, now.Add(11*time.Second)); err != nil {
 		t.Errorf("Expected success for different cell after global cooldown, got: %v", err)
 	}
 }
