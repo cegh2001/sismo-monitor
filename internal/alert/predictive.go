@@ -24,6 +24,59 @@ type FaultProjection struct {
 	// consumers that pre-date this field will see it omitted entirely
 	// (zero value is omitempty). Backward-compatible.
 	Phase CellPhase `json:"phase,omitempty"`
+	// DynamicRate is the EWMA seismicity rate (events/day) combining 48h and 30d windows.
+	DynamicRate float64 `json:"dynamic_rate,omitempty"`
+	// WeightedEnergy is the depth-weighted seismic energy release metric.
+	WeightedEnergy float64 `json:"weighted_energy,omitempty"`
+}
+
+// DepthWeight calculates a continuous weight [0.15, 1.0] based on focal depth z in km.
+// Surface crustal events (z <= 15 km) have full weight 1.0.
+// Intermediate events (15 < z <= 35 km) decay exponentially.
+// Deep intra-slab events (z > 35 km) are weighted at 0.15.
+func DepthWeight(depth float64) float64 {
+	if depth <= 15.0 {
+		return 1.0
+	}
+	if depth > 35.0 {
+		return 0.15
+	}
+	return math.Exp(-(depth - 15.0) / 18.0)
+}
+
+// CalculateDynamicRate computes the weighted daily seismicity rate (events/day).
+// It combines the recent 48-hour event rate with the 30-day baseline rate using EWMA.
+// During precursor/swarm/replica phases, alpha=0.85 prioritizes the 48h rate; otherwise alpha=0.20.
+func CalculateDynamicRate(cellSismos []Sismo, now time.Time, phase SwarmPhase) float64 {
+	if len(cellSismos) == 0 {
+		return 0.0
+	}
+
+	cutoff48h := now.Add(-48 * time.Hour)
+	cutoff30d := now.Add(-30 * 24 * time.Hour)
+
+	var count48hWeighted float64
+	var count30dWeighted float64
+
+	for _, s := range cellSismos {
+		w := DepthWeight(s.Depth)
+		if s.Time.After(cutoff48h) || s.Time.Equal(cutoff48h) {
+			count48hWeighted += w
+		}
+		if s.Time.After(cutoff30d) || s.Time.Equal(cutoff30d) {
+			count30dWeighted += w
+		}
+	}
+
+	rate48h := count48hWeighted / 2.0  // events per day over 2 days
+	rate30d := count30dWeighted / 30.0 // events per day over 30 days
+
+	alpha := 0.20
+	if phase == PhasePrecursor || phase == PhaseAtencion || phase == PhaseReplicas {
+		alpha = 0.85
+	}
+
+	return alpha*rate48h + (1.0-alpha)*rate30d
 }
 
 // GetFaultName returns the fault name associated with a given latitude and longitude.
@@ -65,15 +118,19 @@ func CalculateBValue(magnitudes []float64, Mc float64, deltaM float64) float64 {
 	return math.Log10(math.E) / denominator
 }
 
-// AnalyzeGridCell computes the Gutenberg-Richter, Omori, and Bath metrics for a specific grid cell.
+// AnalyzeGridCell computes the Gutenberg-Richter, Omori, Bath metrics, and dynamic rates for a specific grid cell.
 // It accepts only the sismos belonging to the cell, avoiding scanning the entire history.
 func AnalyzeGridCell(cell string, cellSismos []Sismo, now time.Time) FaultProjection {
 	var magnitudes []float64
 	var mainshock Sismo
 	hasMainshock := false
+	var weightedEnergy float64
 
 	for _, s := range cellSismos {
 		magnitudes = append(magnitudes, s.Magnitude)
+		w := DepthWeight(s.Depth)
+		weightedEnergy += w * math.Pow(10, 1.5*s.Magnitude)
+
 		if s.Magnitude >= 4.5 {
 			if !hasMainshock || s.Magnitude > mainshock.Magnitude {
 				mainshock = s
@@ -83,8 +140,9 @@ func AnalyzeGridCell(cell string, cellSismos []Sismo, now time.Time) FaultProjec
 	}
 
 	proj := FaultProjection{
-		GridCell:   cell,
-		EventCount: len(cellSismos),
+		GridCell:       cell,
+		EventCount:     len(cellSismos),
+		WeightedEnergy: weightedEnergy,
 	}
 
 	if len(cellSismos) > 0 {
@@ -95,6 +153,7 @@ func AnalyzeGridCell(cell string, cellSismos []Sismo, now time.Time) FaultProjec
 
 	// Gutenberg-Richter b-value (Mc = 2.5, deltaMb = 0.1)
 	proj.BValue = CalculateBValue(magnitudes, 2.5, 0.1)
+	proj.DynamicRate = CalculateDynamicRate(cellSismos, now, PhaseEstable)
 
 	// Omori & Bath Calculations
 	if hasMainshock {

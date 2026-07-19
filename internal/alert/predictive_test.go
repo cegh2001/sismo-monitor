@@ -282,3 +282,42 @@ func indexOf(s, sub string) int {
 	}
 	return -1
 }
+
+func TestDepthWeight(t *testing.T) {
+	// Case 1: Surface crustal event (z <= 15) -> 1.0
+	if w := DepthWeight(10.0); w != 1.0 {
+		t.Errorf("Expected weight 1.0 for 10km depth, got %f", w)
+	}
+
+	// Case 2: Deep event (z > 35) -> 0.15
+	if w := DepthWeight(50.0); w != 0.15 {
+		t.Errorf("Expected weight 0.15 for 50km depth, got %f", w)
+	}
+
+	// Case 3: Intermediate event (15 < z <= 35) -> exponential decay
+	w25 := DepthWeight(25.0)
+	if w25 <= 0.15 || w25 >= 1.0 {
+		t.Errorf("Expected weight between 0.15 and 1.0 for 25km depth, got %f", w25)
+	}
+}
+
+func TestCalculateDynamicRate(t *testing.T) {
+	now := time.Now()
+	cellSismos := []Sismo{
+		{Depth: 10.0, Magnitude: 3.0, Time: now.Add(-10 * time.Hour)},
+		{Depth: 10.0, Magnitude: 3.2, Time: now.Add(-5 * time.Hour)},
+		{Depth: 10.0, Magnitude: 3.5, Time: now.Add(-1 * time.Hour)},
+	}
+
+	// In Precursor phase (alpha = 0.85), rate48h = 3 / 2 = 1.5 sismos/day
+	rateSwarm := CalculateDynamicRate(cellSismos, now, PhasePrecursor)
+	if rateSwarm < 1.0 {
+		t.Errorf("Expected elevated dynamic rate for swarm phase, got %f", rateSwarm)
+	}
+
+	// In Estable phase (alpha = 0.20), historical 30d baseline dampens the rate
+	rateNormal := CalculateDynamicRate(cellSismos, now, PhaseEstable)
+	if rateNormal >= rateSwarm {
+		t.Errorf("Expected normal rate (%f) to be lower than swarm rate (%f)", rateNormal, rateSwarm)
+	}
+}

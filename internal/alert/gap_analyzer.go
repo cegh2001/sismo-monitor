@@ -138,13 +138,13 @@ func (g *GapAnalyzer) Add(s Sismo) (bool, error) {
 		return false, nil
 	}
 
-	// 1. Gather all sismos with Mag >= 2.0 in the 12-hour window ending at s.Time
+	// 1. Gather all shallow/crustal sismos (Depth <= 35.0 km) with Mag >= 2.0 in the 12-hour window ending at s.Time
 	cutoff := s.Time.Add(-12 * time.Hour)
 	var swarm []Sismo
 
 	if cellSismos, found := g.cellSismosMap[s.GridCell]; found {
 		for _, prev := range cellSismos {
-			if prev.Magnitude >= 2.0 &&
+			if prev.Magnitude >= 2.0 && (prev.Depth <= 35.0 || prev.Depth == 0.0) &&
 				(prev.Time.After(cutoff) || prev.Time.Equal(cutoff)) &&
 				(prev.Time.Before(s.Time) || prev.Time.Equal(s.Time)) {
 				swarm = append(swarm, prev)
@@ -152,7 +152,7 @@ func (g *GapAnalyzer) Add(s Sismo) (bool, error) {
 		}
 	}
 
-	if s.Magnitude >= 2.0 {
+	if s.Magnitude >= 2.0 && (s.Depth <= 35.0 || s.Depth == 0.0) {
 		swarm = append(swarm, s)
 	}
 

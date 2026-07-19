@@ -420,3 +420,28 @@ func TestGapAnalyzerGetCellEvents(t *testing.T) {
 	})
 }
 
+func TestGapAnalyzerDepthFiltering(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "sismos_depth_test.json")
+
+	analyzer := NewGapAnalyzer(dbPath)
+	now := time.Now()
+
+	// Seed 2 deep events (depth = 120km) in G_deep
+	deepEvents := []Sismo{
+		{ID: "d1", GridCell: "G_deep", Magnitude: 3.5, Depth: 120.0, Time: now.Add(-10 * time.Hour)},
+		{ID: "d2", GridCell: "G_deep", Magnitude: 3.8, Depth: 150.0, Time: now.Add(-5 * time.Hour)},
+	}
+	analyzer.SetSismos(deepEvents)
+
+	// Add a 3rd deep event — should NOT trigger instability because depth > 35km
+	s3 := Sismo{ID: "d3", GridCell: "G_deep", Magnitude: 4.0, Depth: 180.0, Time: now}
+	triggered, err := analyzer.Add(s3)
+	if err != nil {
+		t.Fatalf("Add failed: %v", err)
+	}
+	if triggered {
+		t.Errorf("Expected deep swarm (z > 35km) to NOT trigger instability alarm, but got trigger=true")
+	}
+}
+
