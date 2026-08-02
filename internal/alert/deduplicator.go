@@ -71,19 +71,41 @@ func (d *Deduplicator) Add(s Sismo) (Sismo, bool) {
 
 	// Check if s matches any event in our recentEvents list
 	for i, prev := range d.recentEvents {
+		// 1. Direct ID match (e.g. native source ID revision)
+		if s.ID != "" && prev.ID != "" {
+			if s.ID == prev.ID || strings.Contains(prev.ID, s.ID) {
+				fused := d.fuse(prev, s)
+				d.recentEvents[i] = fused
+				return fused, true
+			}
+		}
+
 		timeDiff := prev.Time.Sub(s.Time)
 		if timeDiff < 0 {
 			timeDiff = -timeDiff
 		}
 
-		if timeDiff <= d.window {
-			dist := geo.HaversineDistance(prev.Latitude, prev.Longitude, s.Latitude, s.Longitude)
-			if dist < d.maxDistance {
-				// Match found! Fuse them.
+		dist := geo.HaversineDistance(prev.Latitude, prev.Longitude, s.Latitude, s.Longitude)
+
+		// 2. Same-Source Revision Check:
+		// When an agency (e.g. SGC) updates an event, origin time diff is small (<= 3 min)
+		// but initial epicenter estimations can shift up to 100 km.
+		isSameSource := sourceHasAny(prev.Source, map[string]bool{s.Source: true})
+		if isSameSource {
+			sameSourceWindow := 180 * time.Second
+			sameSourceMaxDist := 100.0
+			if timeDiff <= sameSourceWindow && dist <= sameSourceMaxDist {
 				fused := d.fuse(prev, s)
 				d.recentEvents[i] = fused
 				return fused, true
 			}
+		}
+
+		// 3. General Cross-Source Space-Time Window
+		if timeDiff <= d.window && dist <= d.maxDistance {
+			fused := d.fuse(prev, s)
+			d.recentEvents[i] = fused
+			return fused, true
 		}
 	}
 
@@ -134,16 +156,27 @@ func (d *Deduplicator) fuse(prev, curr Sismo) Sismo {
 	fused := prev
 
 	// 1. Location/Depth/Coordinates: Prefer Funvisis
-	if curr.Source == "Funvisis" && prev.Source != "Funvisis" {
+	if curr.Source == "Funvisis" && !strings.Contains(prev.Source, "Funvisis") {
 		fused.Latitude = curr.Latitude
 		fused.Longitude = curr.Longitude
 		fused.Depth = curr.Depth
 		fused.Location = curr.Location
 		fused.Distance = curr.Distance
 		fused.GridCell = curr.GridCell
+	} else if strings.Contains(prev.Source, curr.Source) && curr.Source != "Funvisis" {
+		// If curr is a revision from the same source (and prev is not locked to Funvisis),
+		// adopt the refined coordinates and location.
+		if !strings.Contains(prev.Source, "Funvisis") {
+			fused.Latitude = curr.Latitude
+			fused.Longitude = curr.Longitude
+			fused.Depth = curr.Depth
+			fused.Location = curr.Location
+			fused.Distance = curr.Distance
+			fused.GridCell = curr.GridCell
+		}
 	}
 
-	// 2. Magnitude: Prefer global sources (USGS, EMSC)
+	// 2. Magnitude: Prefer global sources (USGS, EMSC) or same-source revision
 	currHasMag := sourceHasAny(curr.Source, magnitudeSources)
 	prevHasMag := sourceHasAny(prev.Source, magnitudeSources)
 
@@ -153,6 +186,9 @@ func (d *Deduplicator) fuse(prev, curr Sismo) Sismo {
 		if curr.Source == "USGS" {
 			fused.Magnitude = curr.Magnitude
 		}
+	} else if strings.Contains(prev.Source, curr.Source) {
+		// Revision from same source (e.g. SGC adjustment): update magnitude to latest estimate
+		fused.Magnitude = curr.Magnitude
 	}
 
 	// 3. Keep the earliest time

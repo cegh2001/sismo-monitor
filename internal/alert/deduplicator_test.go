@@ -181,3 +181,79 @@ func TestDeduplicatorFunvisisThenEMSC(t *testing.T) {
 		t.Errorf("Expected combined source 'Funvisis+EMSC', got %q", res2.Source)
 	}
 }
+
+func TestDeduplicatorSameSourceRevisions(t *testing.T) {
+	d := NewDeduplicator(120*time.Second, 50.0)
+	baseTime := time.Now()
+
+	// SGC revision 1: prelim location (dist 192.5km equivalent)
+	sgc1 := Sismo{
+		ID:        "sgc-20261",
+		Source:    "SGC",
+		Magnitude: 4.5,
+		Depth:     10.0,
+		Latitude:  10.50,
+		Longitude: -68.80,
+		Time:      baseTime,
+	}
+
+	// SGC revision 2: adjusted location (shifted 58 km away) and magnitude updated to 4.7
+	sgc2 := Sismo{
+		ID:        "sgc-20262",
+		Source:    "SGC",
+		Magnitude: 4.7,
+		Depth:     10.0,
+		Latitude:  10.95, // ~50+ km shift
+		Longitude: -68.50,
+		Time:      baseTime.Add(20 * time.Second),
+	}
+
+	_, isUpdate1 := d.Add(sgc1)
+	if isUpdate1 {
+		t.Fatalf("First SGC event should be new")
+	}
+
+	fused, isUpdate2 := d.Add(sgc2)
+	if !isUpdate2 {
+		t.Fatalf("Same-source SGC revision should be detected as update")
+	}
+
+	if fused.Magnitude != 4.7 {
+		t.Errorf("Expected updated magnitude 4.7, got %.1f", fused.Magnitude)
+	}
+	if fused.Latitude != 10.95 || fused.Longitude != -68.50 {
+		t.Errorf("Expected updated coordinates from same-source revision, got (%.2f, %.2f)", fused.Latitude, fused.Longitude)
+	}
+}
+
+func TestDeduplicatorNativeIDMatching(t *testing.T) {
+	d := NewDeduplicator(120*time.Second, 50.0)
+	baseTime := time.Now()
+
+	sgc1 := Sismo{
+		ID:        "sgc-SGC2026npltez",
+		Source:    "SGC",
+		Magnitude: 4.2,
+		Time:      baseTime,
+		Latitude:  10.0,
+		Longitude: -66.0,
+	}
+
+	sgc2 := Sismo{
+		ID:        "sgc-SGC2026npltez",
+		Source:    "SGC",
+		Magnitude: 4.5,
+		Time:      baseTime.Add(30 * time.Second),
+		Latitude:  10.8, // shifted distance > 50km
+		Longitude: -66.0,
+	}
+
+	d.Add(sgc1)
+	fused, isUpdate := d.Add(sgc2)
+	if !isUpdate {
+		t.Fatalf("Matching native ID should trigger update")
+	}
+	if fused.Magnitude != 4.5 {
+		t.Errorf("Expected magnitude 4.5, got %.1f", fused.Magnitude)
+	}
+}

@@ -176,10 +176,16 @@ func parseExtractResult(jsonStr string, logFn func(string, ...interface{})) ([]a
 			eventTime = time.Now().In(locHLV)
 		}
 
-		hashInput := fmt.Sprintf("sgc-%s-%.3f-%.3f-%.1f", jsEvent.DateTime, latVal, lonVal, magVal)
-		hasher := md5.New()
-		hasher.Write([]byte(hashInput))
-		eventID := "sgc-" + hex.EncodeToString(hasher.Sum(nil))[:12]
+		var eventID string
+		sismoID := strings.TrimSpace(jsEvent.SismoID)
+		if sismoID != "" {
+			eventID = "sgc-" + sismoID
+		} else {
+			hashInput := fmt.Sprintf("sgc-%s-%s", jsEvent.DateTime, jsEvent.Place)
+			hasher := md5.New()
+			hasher.Write([]byte(hashInput))
+			eventID = "sgc-" + hex.EncodeToString(hasher.Sum(nil))[:12]
+		}
 
 		dist := geo.DistanceToLaGuaira(latVal, lonVal)
 		locStr := jsEvent.Place
