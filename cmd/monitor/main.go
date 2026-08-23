@@ -178,13 +178,13 @@ func main() {
 	// MsgGapState to the TUI each event cycle.
 	gapCoord := NewCoordinator(gapAnalyzer, notifier, tuiChan, tuiLog)
 
-	// Initialize Gemma 4 LLM Synthesizer
+	// Initialize Gemma 4 LLM Synthesizer with fallback chain
 	if cfg.GeminiAPIKey != "" {
 		gemma := llm.NewGemmaSynthesizer(cfg.GeminiAPIKey, tuiLog)
 		gapCoord.SetGemmaSynthesizer(gemma)
-		tuiLog("Gemma 4 LLM Synthesizer ENABLED (model=gemma-4-31b-it, search-grounding=true)")
+		tuiLog("LLM Synthesizer ENABLED (chain: gemma-4-31b-it → gemini-2.5-flash → gemini-2.5-flash-lite → no-grounding)")
 	} else {
-		tuiLog("Gemma 4 LLM Synthesizer DISABLED (GEMINI_API_KEY not configured)")
+		tuiLog("LLM Synthesizer DISABLED (GEMINI_API_KEY not configured)")
 	}
 
 	simServer.SetGemmaAnalyzeHandler(func() {

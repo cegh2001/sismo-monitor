@@ -17,6 +17,16 @@ const (
 	MaxDailyReports  = 50
 )
 
+// fallbackModels defines the ordered chain of models to try when the primary
+// model hits a quota/rate-limit error. Each entry is tried with Search
+// Grounding enabled. If all grounded models fail, the primary model is tried
+// one last time without Search Grounding as a final fallback.
+var fallbackModels = []string{
+	"gemma-4-31b-it",       // Primary: Gemma 4 with Search Grounding
+	"gemini-2.5-flash",     // Fallback 1: higher RPM (10) and RPD (500), grounding 1500 RPD
+	"gemini-2.5-flash-lite", // Fallback 2: highest RPM (15) and RPD (1000), grounding 500 RPD
+}
+
 // GemmaSynthesizer orchestrates LLM report generation using Gemma 4 via Google GenAI SDK.
 type GemmaSynthesizer struct {
 	mu             sync.Mutex
@@ -111,6 +121,8 @@ func (g *GemmaSynthesizer) updateRateLimit(cellID string, now time.Time) {
 }
 
 // Synthesize generates a natural language seismic narrative report.
+// It tries a chain of models with Search Grounding when quota is exceeded,
+// falling back to the primary model without grounding as a last resort.
 func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest) (SynthesisResponse, error) {
 	now := time.Now()
 
@@ -124,7 +136,6 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 		return SynthesisResponse{}, err
 	}
 	client := g.client
-	modelName := g.modelName
 	if len(req.PreviousReports) == 0 && len(g.history) > 0 {
 		req.PreviousReports = make([]SynthesisResponse, len(g.history))
 		copy(req.PreviousReports, g.history)
@@ -137,57 +148,98 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 	}
 
 	if g.logger != nil {
-		g.logger("Invoking Gemma 4 (%s) for cell %s (Trigger: %s, PrevAnalyses: %d)", modelName, req.CellID, req.TriggerType, len(req.PreviousReports))
+		g.logger("Starting synthesis for cell %s (Trigger: %s, PrevAnalyses: %d)", req.CellID, req.TriggerType, len(req.PreviousReports))
 	}
 
-	// Try with GoogleSearch grounding first
-	resp, err := g.callWithSearchGrounding(ctx, client, modelName, promptText)
-	if err != nil {
-		errStr := err.Error()
-		if strings.Contains(errStr, "RESOURCE_EXHAUSTED") || strings.Contains(errStr, "429") {
-			// Extract retry message with full time unit
-			retryMsg := "⏳ Límite de cuota API excedido (Google GenAI Rate Limit 429)."
-			if idx := strings.Index(errStr, "Please retry in "); idx != -1 {
-				rest := errStr[idx+len("Please retry in "):]
-				// Capture until first "." or newline, but include the full time unit
-				if endIdx := strings.IndexAny(rest, "\n"); endIdx != -1 {
-					retryText := strings.TrimRight(rest[:endIdx], ".,")
-					retryMsg = fmt.Sprintf("⏳ Cuota de Google GenAI superada (RPM). Espere %s antes de solicitar otro análisis.", retryText)
-				} else if endIdx := strings.Index(rest, "."); endIdx != -1 {
-					retryText := strings.TrimSpace(rest[:endIdx])
-					retryMsg = fmt.Sprintf("⏳ Cuota de Google GenAI superada (RPM). Espere %s antes de solicitar otro análisis.", retryText)
+	// Try each model in the fallback chain with Search Grounding
+	var lastErr error
+	for i, modelName := range fallbackModels {
+		if g.logger != nil && i > 0 {
+			g.logger("Fallback chain: trying model %d/%d: %s", i+1, len(fallbackModels), modelName)
+		}
+
+		resp, err := g.callWithSearchGrounding(ctx, client, modelName, promptText)
+		if err == nil {
+			// Success
+			if g.logger != nil {
+				if i > 0 {
+					g.logger("Fallback succeeded with model: %s", modelName)
+				} else {
+					g.logger("Primary model %s succeeded with Search Grounding", modelName)
 				}
 			}
+			g.updateRateLimit(req.CellID, now)
+			parsedRes := parseResponse(resp, modelName, now)
+			g.mu.Lock()
+			g.history = append(g.history, parsedRes)
+			if len(g.history) > 5 {
+				g.history = g.history[len(g.history)-5:]
+			}
+			g.mu.Unlock()
+			return parsedRes, nil
+		}
 
-			// Fallback: try without GoogleSearch grounding
-			if g.logger != nil {
-				g.logger("Google GenAI quota exceeded, falling back to Gemma without Search Grounding")
-			}
-			resp, err = g.callWithoutSearchGrounding(ctx, client, modelName, promptText)
-			if err != nil {
-				// If fallback also fails, return the original quota error
-				return SynthesisResponse{}, fmt.Errorf("%s", retryMsg)
-			}
-			// Fallback succeeded, continue with response
-			if g.logger != nil {
-				g.logger("Fallback to Gemma (no Search Grounding) succeeded")
-			}
-		} else {
+		// Check if it's a quota/rate-limit error
+		errStr := err.Error()
+		if !strings.Contains(errStr, "RESOURCE_EXHAUSTED") && !strings.Contains(errStr, "429") {
+			// Not a quota error, return immediately
 			return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", err)
+		}
+
+		// Quota error, save for potential final error message
+		lastErr = err
+		if g.logger != nil {
+			g.logger("Model %s hit quota limit, trying next fallback...", modelName)
 		}
 	}
 
-	g.updateRateLimit(req.CellID, now)
-	parsedRes := parseResponse(resp, modelName, now)
+	// All grounded models failed with quota errors, try primary model without grounding
+	if g.logger != nil {
+		g.logger("All grounded models exhausted, trying %s without Search Grounding as final fallback", fallbackModels[0])
+	}
 
+	resp, err := g.callWithoutSearchGrounding(ctx, client, fallbackModels[0], promptText)
+	if err != nil {
+		// Final fallback also failed, return the original quota error
+		retryMsg := g.extractQuotaErrorMessage(lastErr)
+		return SynthesisResponse{}, fmt.Errorf("%s", retryMsg)
+	}
+
+	// Final fallback succeeded
+	if g.logger != nil {
+		g.logger("Final fallback succeeded: %s without Search Grounding", fallbackModels[0])
+	}
+	g.updateRateLimit(req.CellID, now)
+	parsedRes := parseResponse(resp, fallbackModels[0]+" (no grounding)", now)
 	g.mu.Lock()
 	g.history = append(g.history, parsedRes)
 	if len(g.history) > 5 {
 		g.history = g.history[len(g.history)-5:]
 	}
 	g.mu.Unlock()
-
 	return parsedRes, nil
+}
+
+// extractQuotaErrorMessage parses a 429/RESOURCE_EXHAUSTED error and returns
+// a user-friendly message with the retry time if available.
+func (g *GemmaSynthesizer) extractQuotaErrorMessage(err error) string {
+	if err == nil {
+		return "⏳ Límite de cuota API excedido (Google GenAI Rate Limit 429)."
+	}
+	errStr := err.Error()
+	retryMsg := "⏳ Límite de cuota API excedido (Google GenAI Rate Limit 429)."
+	if idx := strings.Index(errStr, "Please retry in "); idx != -1 {
+		rest := errStr[idx+len("Please retry in "):]
+		// Capture until first newline or period, preserving the full time unit
+		if endIdx := strings.IndexAny(rest, "\n"); endIdx != -1 {
+			retryText := strings.TrimRight(rest[:endIdx], ".,")
+			retryMsg = fmt.Sprintf("⏳ Cuota de Google GenAI superada (RPM). Espere %s antes de solicitar otro análisis.", retryText)
+		} else if endIdx := strings.Index(rest, "."); endIdx != -1 {
+			retryText := strings.TrimSpace(rest[:endIdx])
+			retryMsg = fmt.Sprintf("⏳ Cuota de Google GenAI superada (RPM). Espere %s antes de solicitar otro análisis.", retryText)
+		}
+	}
+	return retryMsg
 }
 
 // callWithSearchGrounding invokes the model with GoogleSearch tool enabled.
