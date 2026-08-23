@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"sismo-monitor/internal/alert"
@@ -336,5 +337,68 @@ func TestFunvisisSorting(t *testing.T) {
 	}
 	if ev3.Location != "Newest Event" {
 		t.Errorf("Expected third dispatched event to be 'Newest Event', got %q", ev3.Location)
+	}
+}
+
+func TestFunvisisEmptyResponse(t *testing.T) {
+	// Test empty response body
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("")) // Empty response
+	}))
+	defer server.Close()
+
+	scraper := NewFunvisisScraper(nil, nil)
+	scraper.url = server.URL
+
+	_, err := scraper.Scrape(context.Background())
+	if err == nil {
+		t.Fatal("Expected error for empty response, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty response body") {
+		t.Errorf("Expected 'empty response body' error, got: %v", err)
+	}
+}
+
+func TestFunvisisTruncatedJSON(t *testing.T) {
+	// Test truncated JSON response
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"type": "FeatureCollection", "features": [`)) // Truncated
+	}))
+	defer server.Close()
+
+	scraper := NewFunvisisScraper(nil, nil)
+	scraper.url = server.URL
+
+	_, err := scraper.Scrape(context.Background())
+	if err == nil {
+		t.Fatal("Expected error for truncated JSON, got nil")
+	}
+	if !strings.Contains(err.Error(), "truncated") && !strings.Contains(err.Error(), "incomplete") {
+		t.Errorf("Expected truncated/incomplete error, got: %v", err)
+	}
+}
+
+func TestFunvisisShortResponse(t *testing.T) {
+	// Test response that is too short to be valid
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{`)) // Too short
+	}))
+	defer server.Close()
+
+	scraper := NewFunvisisScraper(nil, nil)
+	scraper.url = server.URL
+
+	_, err := scraper.Scrape(context.Background())
+	if err == nil {
+		t.Fatal("Expected error for short response, got nil")
+	}
+	if !strings.Contains(err.Error(), "too short") {
+		t.Errorf("Expected 'too short' error, got: %v", err)
 	}
 }

@@ -138,6 +138,13 @@ func (s *FunvisisScraper) Scrape(ctx context.Context) ([]alert.Sismo, error) {
 		return nil, fmt.Errorf("HTTP response code: %d", resp.StatusCode)
 	}
 
+	// Check Content-Type to detect unexpected responses (e.g., HTML error pages)
+	contentType := resp.Header.Get("Content-Type")
+	if contentType != "" && !strings.Contains(contentType, "json") && !strings.Contains(contentType, "text/plain") {
+		// Might be an HTML error page or other unexpected format
+		s.log("Funvisis returned unexpected Content-Type: %s", contentType)
+	}
+
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("reading body failed: %w", err)
@@ -145,6 +152,17 @@ func (s *FunvisisScraper) Scrape(ctx context.Context) ([]alert.Sismo, error) {
 
 	content := string(body)
 	trimmed := strings.TrimSpace(content)
+	
+	// Validate that we got actual content
+	if len(trimmed) == 0 {
+		return nil, fmt.Errorf("empty response body from server")
+	}
+	
+	// Log first 100 chars for debugging if it looks malformed
+	if len(trimmed) < 10 {
+		return nil, fmt.Errorf("response too short (%d bytes): %q", len(trimmed), trimmed)
+	}
+	
 	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 		return s.ParseJSON(trimmed)
 	}
@@ -343,6 +361,18 @@ type FunvisisProperties struct {
 func (s *FunvisisScraper) ParseJSON(jsonStr string) ([]alert.Sismo, error) {
 	var geoJSON FunvisisGeoJSON
 	if err := json.Unmarshal([]byte(jsonStr), &geoJSON); err != nil {
+		// Provide more context for common JSON errors
+		if strings.Contains(err.Error(), "unexpected end of JSON input") {
+			return nil, fmt.Errorf("JSON response truncated or incomplete (%d bytes received)", len(jsonStr))
+		}
+		if strings.Contains(err.Error(), "invalid character") {
+			// Show first 100 chars to help debug
+			preview := jsonStr
+			if len(preview) > 100 {
+				preview = preview[:100] + "..."
+			}
+			return nil, fmt.Errorf("invalid JSON response: %w (preview: %q)", err, preview)
+		}
 		return nil, fmt.Errorf("unmarshal GeoJSON failed: %w", err)
 	}
 
