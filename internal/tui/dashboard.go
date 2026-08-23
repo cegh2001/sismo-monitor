@@ -174,18 +174,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "home":
 				m.predictiveScroll = 0
 				return m, nil
-			case "g":
-				if time.Since(m.startTime) < simCooldown {
-					m.statusMsg = "Startup cooldown active — manual Gemma analysis disabled for 2s"
-					return m, nil
-				}
-				m.currentView = ViewGemma
-				m.gemmaScroll = 0
-				m.gemmaError = ""
-				m.gemmaGenerating = true
-				m.statusMsg = "Solicitando análisis sismológico a Gemma 4 (Google Search Grounded)..."
-				return m, triggerGemmaAnalysis(m.Port)
-			case "end":
+		case "g":
+			// Open Gemma view without triggering analysis
+			// User must press 'g' again inside ViewGemma to generate
+			m.currentView = ViewGemma
+			m.gemmaScroll = 0
+			m.gemmaError = ""
+			m.statusMsg = "Vista Gemma 4 abierta. Presione [g] para generar análisis."
+			return m, nil
+		case "end":
 				content := m.renderPredictiveView()
 				totalLines := strings.Count(content, "\n") + 1
 				maxScroll := totalLines - m.termHeight
@@ -229,16 +226,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Triggering instability test alerts (5 hist, 3 swarm)..."
 			return m, triggerInstabilitySimulation(m.Port)
 		case "g":
-			if time.Since(m.startTime) < simCooldown {
-				m.statusMsg = "Startup cooldown active — manual Gemma analysis disabled for 2s"
-				return m, nil
-			}
+			// Open Gemma view without triggering analysis
+			// User must press 'g' again inside ViewGemma to generate
 			m.currentView = ViewGemma
 			m.gemmaScroll = 0
 			m.gemmaError = ""
-			m.gemmaGenerating = true
-			m.statusMsg = "Solicitando análisis sismológico a Gemma 4 (Google Search Grounded)..."
-			return m, triggerGemmaAnalysis(m.Port)
+			m.statusMsg = "Vista Gemma 4 abierta. Presione [g] para generar análisis."
+			return m, nil
 		case "p":
 			m.currentView = ViewPredictive
 			m.predictiveScroll = 0

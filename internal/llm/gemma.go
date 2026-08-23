@@ -120,6 +120,58 @@ func (g *GemmaSynthesizer) updateRateLimit(cellID string, now time.Time) {
 	g.dailyCount++
 }
 
+// isTransientError returns true if the error is transient and should be retried.
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	// 500: Internal Server Error
+	// 502: Bad Gateway
+	// 503: Service Unavailable / Timeout
+	// 504: Gateway Timeout
+	return strings.Contains(errStr, "500") ||
+		strings.Contains(errStr, "502") ||
+		strings.Contains(errStr, "503") ||
+		strings.Contains(errStr, "504") ||
+		strings.Contains(errStr, "timed out") ||
+		strings.Contains(errStr, "timeout")
+}
+
+// callWithRetry wraps a model call with exponential backoff retry for transient errors.
+func (g *GemmaSynthesizer) callWithRetry(ctx context.Context, callFn func() (*genai.GenerateContentResponse, error), modelName string) (*genai.GenerateContentResponse, error) {
+	const maxRetries = 3
+	backoff := time.Second
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		resp, err := callFn()
+		if err == nil {
+			return resp, nil
+		}
+
+		// Only retry on transient errors
+		if !isTransientError(err) {
+			return nil, err
+		}
+
+		// Don't wait after the last attempt
+		if attempt < maxRetries {
+			if g.logger != nil {
+				g.logger("Model %s: transient error (attempt %d/%d), retrying in %v...", modelName, attempt+1, maxRetries, backoff)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(backoff):
+			}
+			backoff *= 2 // Exponential backoff: 1s, 2s, 4s
+		}
+	}
+
+	// All retries exhausted
+	return nil, fmt.Errorf("all %d retry attempts failed", maxRetries)
+}
+
 // Synthesize generates a natural language seismic narrative report.
 // It tries a chain of models with Search Grounding when quota is exceeded,
 // falling back to the primary model without grounding as a last resort.
@@ -158,7 +210,10 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 			g.logger("Fallback chain: trying model %d/%d: %s", i+1, len(fallbackModels), modelName)
 		}
 
-		resp, err := g.callWithSearchGrounding(ctx, client, modelName, promptText)
+		// Wrap call with retry logic for transient errors
+		resp, err := g.callWithRetry(ctx, func() (*genai.GenerateContentResponse, error) {
+			return g.callWithSearchGrounding(ctx, client, modelName, promptText)
+		}, modelName)
 		if err == nil {
 			// Success
 			if g.logger != nil {
@@ -198,7 +253,10 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 		g.logger("All grounded models exhausted, trying %s without Search Grounding as final fallback", fallbackModels[0])
 	}
 
-	resp, err := g.callWithoutSearchGrounding(ctx, client, fallbackModels[0], promptText)
+	// Wrap final fallback call with retry logic for transient errors
+	resp, err := g.callWithRetry(ctx, func() (*genai.GenerateContentResponse, error) {
+		return g.callWithoutSearchGrounding(ctx, client, fallbackModels[0], promptText)
+	}, fallbackModels[0]+" (no grounding)")
 	if err != nil {
 		// Final fallback also failed, return the original quota error
 		retryMsg := g.extractQuotaErrorMessage(lastErr)
@@ -243,15 +301,16 @@ func (g *GemmaSynthesizer) extractQuotaErrorMessage(err error) string {
 }
 
 // callWithSearchGrounding invokes the model with GoogleSearch tool enabled.
+// Uses the appropriate thinking configuration based on model family:
+// - Gemini 2.5 series: thinkingBudget (token count)
+// - Gemini 3.x and Gemma: thinkingLevel (semantic levels)
 func (g *GemmaSynthesizer) callWithSearchGrounding(ctx context.Context, client *genai.Client, modelName, promptText string) (*genai.GenerateContentResponse, error) {
 	tools := []*genai.Tool{
 		{GoogleSearch: &genai.GoogleSearch{}},
 	}
 	config := &genai.GenerateContentConfig{
-		Tools: tools,
-		ThinkingConfig: &genai.ThinkingConfig{
-			ThinkingLevel: genai.ThinkingLevel("HIGH"),
-		},
+		Tools:          tools,
+		ThinkingConfig: g.buildThinkingConfig(modelName),
 	}
 	return client.Models.GenerateContent(ctx, modelName, genai.Text(promptText), config)
 }
@@ -259,11 +318,24 @@ func (g *GemmaSynthesizer) callWithSearchGrounding(ctx context.Context, client *
 // callWithoutSearchGrounding invokes the model without any tools (fallback when quota is exceeded).
 func (g *GemmaSynthesizer) callWithoutSearchGrounding(ctx context.Context, client *genai.Client, modelName, promptText string) (*genai.GenerateContentResponse, error) {
 	config := &genai.GenerateContentConfig{
-		ThinkingConfig: &genai.ThinkingConfig{
-			ThinkingLevel: genai.ThinkingLevel("HIGH"),
-		},
+		ThinkingConfig: g.buildThinkingConfig(modelName),
 	}
 	return client.Models.GenerateContent(ctx, modelName, genai.Text(promptText), config)
+}
+
+// buildThinkingConfig returns the appropriate thinking configuration for the given model.
+// Gemini 2.5 series uses thinkingBudget (token count), while Gemini 3.x and Gemma use thinkingLevel.
+func (g *GemmaSynthesizer) buildThinkingConfig(modelName string) *genai.ThinkingConfig {
+	// Gemini 2.5 series: use thinkingBudget
+	if strings.Contains(modelName, "gemini-2.5") {
+		return &genai.ThinkingConfig{
+			ThinkingBudget: genai.Ptr(int32(-1)), // Dynamic thinking budget
+		}
+	}
+	// Gemini 3.x and Gemma: use thinkingLevel
+	return &genai.ThinkingConfig{
+		ThinkingLevel: genai.ThinkingLevel("HIGH"),
+	}
 }
 
 // parseResponse extracts the narrative body and Search Grounding citations from genai output.
