@@ -81,6 +81,29 @@ func main() {
 		tuiLog("Failed to load historical gaps database: %v", err)
 	}
 
+	// Initialize persistent coordinator state store (survives restarts).
+	// This stores prevState, cooldown, and notification keys to prevent
+	// re-firing notifications and re-triggering LLM synthesis after restarts.
+	coordStateStore := NewCoordinatorStateStore("data/coordinator_state.json")
+	if err := coordStateStore.Load(); err != nil {
+		tuiLog("Failed to load coordinator state: %v", err)
+	}
+	go func() {
+		// Prune old notification keys every hour (keep 30 days)
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := coordStateStore.PruneNotified(30 * 24 * time.Hour); err != nil {
+					tuiLog("Failed to prune coordinator state: %v", err)
+				}
+			}
+		}
+	}()
+
 	// Seed historical database if empty
 	histWorker := ingest.NewUSGSHistoricalWorker(cfg.USGSHistoricalURL, tuiLog)
 	dbFile := "data/sismos_historicos.json"
@@ -177,6 +200,7 @@ func main() {
 	// Gap-phase coordinator: builds per-cell phase snapshots and emits
 	// MsgGapState to the TUI each event cycle.
 	gapCoord := NewCoordinator(gapAnalyzer, notifier, tuiChan, tuiLog)
+	gapCoord.SetStateStore(coordStateStore)
 
 	// Initialize Gemma 4 LLM Synthesizer with fallback chain
 	if cfg.GeminiAPIKey != "" {
@@ -268,15 +292,27 @@ func main() {
 				if !isUpdate {
 					// 5. Trigger notifications for Critical, Pre-Alert, and Instability events
 					if level == alert.LevelCritical || level == alert.LevelPreAlert || level == alert.LevelInstability {
-						tuiLog("%s detected: Dispatching notification for %s...", level, fused.Location)
-						_ = notifier.Notify(ctx, alert.Alert{Sismo: fused, Level: level})
+						eventKey := alert.NotificationKey(fused.ID)
+						if !coordStateStore.AlreadyNotified(eventKey) {
+							tuiLog("%s detected: Dispatching notification for %s...", level, fused.Location)
+							_ = notifier.Notify(ctx, alert.Alert{Sismo: fused, Level: level})
+							if err := coordStateStore.MarkNotified(eventKey); err != nil {
+								tuiLog("Failed to persist notification key: %v", err)
+							}
+						}
 					}
 
 					// 6. Trigger swarm notification if condition is met
 					if isSwarm {
-						stats.SwarmCount++
-						tuiLog("SWARM DETECTED: >= 5 events with M >= 3.0 under 300km in last 6 hours!")
-						_ = notifier.Notify(ctx, alert.Alert{Sismo: fused, Level: alert.LevelSwarm})
+						swarmKey := alert.SwarmNotificationKey(fused.ID)
+						if !coordStateStore.AlreadyNotified(swarmKey) {
+							stats.SwarmCount++
+							tuiLog("SWARM DETECTED: >= 5 events with M >= 3.0 under 300km in last 6 hours!")
+							_ = notifier.Notify(ctx, alert.Alert{Sismo: fused, Level: alert.LevelSwarm})
+							if err := coordStateStore.MarkNotified(swarmKey); err != nil {
+								tuiLog("Failed to persist swarm notification key: %v", err)
+							}
+						}
 					}
 				}
 

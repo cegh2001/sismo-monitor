@@ -25,10 +25,13 @@ type Coordinator struct {
 	tuiChan     chan<- tea.Msg
 	log         func(string, ...interface{})
 
-	// Per-cell previous phase (used for transition detection).
+	// Persistent state store (survives restarts). Replaces in-memory
+	// prevState and cooldown maps. When nil, falls back to in-memory maps.
+	stateStore *CoordinatorStateStore
+
+	// In-memory fallbacks when stateStore is nil (for tests).
 	prevState map[string]alert.SwarmPhase
-	// Per-cell last-notified time (cooldown).
-	cooldown map[string]time.Time
+	cooldown  map[string]time.Time
 }
 
 // NewCoordinator wires a Coordinator with its dependencies. log may be nil.
@@ -44,6 +47,13 @@ func NewCoordinator(gap *alert.GapAnalyzer, notif alert.Notifier, tuiChan chan<-
 		prevState:   make(map[string]alert.SwarmPhase),
 		cooldown:    make(map[string]time.Time),
 	}
+}
+
+// SetStateStore configures the persistent state store. When set, the coordinator
+// uses it for prevState, cooldown, and notification deduplication instead of
+// in-memory maps. This allows state to survive restarts.
+func (c *Coordinator) SetStateStore(s *CoordinatorStateStore) {
+	c.stateStore = s
 }
 
 // SetGemmaSynthesizer configures the LLM narrative synthesizer component.
@@ -108,7 +118,14 @@ func (c *Coordinator) shouldNotifyOnTransition(cell string, prev, curr alert.Swa
 	}
 	// Cooldown check: skip if the last notification for this cell is within
 	// the cooldown window.
-	if last, ok := c.cooldown[cell]; ok {
+	var last time.Time
+	var ok bool
+	if c.stateStore != nil {
+		last, ok = c.stateStore.GetCooldown(cell)
+	} else {
+		last, ok = c.cooldown[cell]
+	}
+	if ok {
 		if now.Sub(last) < gapPhaseCooldown {
 			return false
 		}
@@ -125,7 +142,13 @@ func (c *Coordinator) EmitGapSnapshot(ctx context.Context, now time.Time) []aler
 
 	// Detect transitions per cell and fire notifier when appropriate.
 	for _, ph := range snapshot {
-		prev := c.prevState[ph.GridCell]
+		var prev alert.SwarmPhase
+		if c.stateStore != nil {
+			prev = c.stateStore.GetPrevState(ph.GridCell)
+		} else {
+			prev = c.prevState[ph.GridCell]
+		}
+
 		if c.shouldNotifyOnTransition(ph.GridCell, prev, ph.Phase, now) {
 			// Use the most recent event in the cell as the alert payload.
 			// We pick the largest-magnitude event in the last 30 days if any.
@@ -142,12 +165,43 @@ func (c *Coordinator) EmitGapSnapshot(ctx context.Context, now time.Time) []aler
 					Time:      ph.MainshockTime,
 				}
 			}
+
+			// Check persistent dedup: skip if this exact phase transition
+			// was already notified in a previous session. This also prevents
+			// unnecessary LLM grounding search calls.
+			phaseKey := alert.PhaseNotificationKey(ph.GridCell, ph.Phase, payload.ID, now)
+			var alreadyNotified bool
+			if c.stateStore != nil {
+				alreadyNotified = c.stateStore.AlreadyNotified(phaseKey)
+			}
+			if alreadyNotified {
+				c.log("Phase transition %v -> %v for cell %s already notified (persistent dedup), skipping", prev, ph.Phase, ph.GridCell)
+				// Still update prevState even if we skip notification
+				if c.stateStore != nil {
+					_ = c.stateStore.SetPrevState(ph.GridCell, ph.Phase)
+				} else {
+					c.prevState[ph.GridCell] = ph.Phase
+				}
+				continue
+			}
+
 			c.log("Phase transition %v -> %v for cell %s, dispatching alert", prev, ph.Phase, ph.GridCell)
 			_ = c.notifier.Notify(ctx, alert.Alert{
 				Sismo: payload,
 				Level: alert.LevelInstability,
 			})
-			c.cooldown[ph.GridCell] = now
+
+			// Update cooldown
+			if c.stateStore != nil {
+				_ = c.stateStore.SetCooldown(ph.GridCell, now)
+			} else {
+				c.cooldown[ph.GridCell] = now
+			}
+
+			// Mark as notified in persistent store
+			if c.stateStore != nil {
+				_ = c.stateStore.MarkNotified(phaseKey)
+			}
 
 			if c.gemma != nil {
 				go func(cell string, prevPhase, currPhase alert.SwarmPhase, mainshock alert.Sismo, evts []alert.Sismo) {
@@ -175,7 +229,12 @@ func (c *Coordinator) EmitGapSnapshot(ctx context.Context, now time.Time) []aler
 				}(ph.GridCell, prev, ph.Phase, payload, events)
 			}
 		}
-		c.prevState[ph.GridCell] = ph.Phase
+		// Update prevState
+		if c.stateStore != nil {
+			_ = c.stateStore.SetPrevState(ph.GridCell, ph.Phase)
+		} else {
+			c.prevState[ph.GridCell] = ph.Phase
+		}
 	}
 	return snapshot
 }
