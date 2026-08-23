@@ -136,35 +136,45 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 		return SynthesisResponse{}, err
 	}
 
-	tools := []*genai.Tool{
-		{GoogleSearch: &genai.GoogleSearch{}},
-	}
-
-	config := &genai.GenerateContentConfig{
-		Tools: tools,
-		ThinkingConfig: &genai.ThinkingConfig{
-			ThinkingLevel: genai.ThinkingLevel("HIGH"),
-		},
-	}
-
 	if g.logger != nil {
 		g.logger("Invoking Gemma 4 (%s) for cell %s (Trigger: %s, PrevAnalyses: %d)", modelName, req.CellID, req.TriggerType, len(req.PreviousReports))
 	}
 
-	resp, err := client.Models.GenerateContent(ctx, modelName, genai.Text(promptText), config)
+	// Try with GoogleSearch grounding first
+	resp, err := g.callWithSearchGrounding(ctx, client, modelName, promptText)
 	if err != nil {
 		errStr := err.Error()
 		if strings.Contains(errStr, "RESOURCE_EXHAUSTED") || strings.Contains(errStr, "429") {
+			// Extract retry message with full time unit
 			retryMsg := "⏳ Límite de cuota API excedido (Google GenAI Rate Limit 429)."
 			if idx := strings.Index(errStr, "Please retry in "); idx != -1 {
 				rest := errStr[idx+len("Please retry in "):]
-				if endIdx := strings.IndexAny(rest, ".,\n"); endIdx != -1 {
-					retryMsg = fmt.Sprintf("⏳ Cuota de Google GenAI superada (RPM). Espere %s antes de solicitar otro análisis.", rest[:endIdx])
+				// Capture until first "." or newline, but include the full time unit
+				if endIdx := strings.IndexAny(rest, "\n"); endIdx != -1 {
+					retryText := strings.TrimRight(rest[:endIdx], ".,")
+					retryMsg = fmt.Sprintf("⏳ Cuota de Google GenAI superada (RPM). Espere %s antes de solicitar otro análisis.", retryText)
+				} else if endIdx := strings.Index(rest, "."); endIdx != -1 {
+					retryText := strings.TrimSpace(rest[:endIdx])
+					retryMsg = fmt.Sprintf("⏳ Cuota de Google GenAI superada (RPM). Espere %s antes de solicitar otro análisis.", retryText)
 				}
 			}
-			return SynthesisResponse{}, fmt.Errorf("%s", retryMsg)
+
+			// Fallback: try without GoogleSearch grounding
+			if g.logger != nil {
+				g.logger("Google GenAI quota exceeded, falling back to Gemma without Search Grounding")
+			}
+			resp, err = g.callWithoutSearchGrounding(ctx, client, modelName, promptText)
+			if err != nil {
+				// If fallback also fails, return the original quota error
+				return SynthesisResponse{}, fmt.Errorf("%s", retryMsg)
+			}
+			// Fallback succeeded, continue with response
+			if g.logger != nil {
+				g.logger("Fallback to Gemma (no Search Grounding) succeeded")
+			}
+		} else {
+			return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", err)
 		}
-		return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", err)
 	}
 
 	g.updateRateLimit(req.CellID, now)
@@ -178,6 +188,30 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 	g.mu.Unlock()
 
 	return parsedRes, nil
+}
+
+// callWithSearchGrounding invokes the model with GoogleSearch tool enabled.
+func (g *GemmaSynthesizer) callWithSearchGrounding(ctx context.Context, client *genai.Client, modelName, promptText string) (*genai.GenerateContentResponse, error) {
+	tools := []*genai.Tool{
+		{GoogleSearch: &genai.GoogleSearch{}},
+	}
+	config := &genai.GenerateContentConfig{
+		Tools: tools,
+		ThinkingConfig: &genai.ThinkingConfig{
+			ThinkingLevel: genai.ThinkingLevel("HIGH"),
+		},
+	}
+	return client.Models.GenerateContent(ctx, modelName, genai.Text(promptText), config)
+}
+
+// callWithoutSearchGrounding invokes the model without any tools (fallback when quota is exceeded).
+func (g *GemmaSynthesizer) callWithoutSearchGrounding(ctx context.Context, client *genai.Client, modelName, promptText string) (*genai.GenerateContentResponse, error) {
+	config := &genai.GenerateContentConfig{
+		ThinkingConfig: &genai.ThinkingConfig{
+			ThinkingLevel: genai.ThinkingLevel("HIGH"),
+		},
+	}
+	return client.Models.GenerateContent(ctx, modelName, genai.Text(promptText), config)
 }
 
 // parseResponse extracts the narrative body and Search Grounding citations from genai output.
