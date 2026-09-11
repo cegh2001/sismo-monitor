@@ -2,6 +2,7 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -11,21 +12,31 @@ import (
 )
 
 const (
-	DefaultModelName = "gemma-4-31b-it"
+	DefaultModelName = "gemini-2.5-flash"
 	CellCooldown     = 10 * time.Minute
 	GlobalCooldown   = 10 * time.Second
 	MaxDailyReports  = 50
+
+	// CallTimeout bounds a single model request so a slow or hung call cannot
+	// block the analysis indefinitely.
+	CallTimeout = 60 * time.Second
+	// MaxOutputTokens caps the narrative length and prevents runaway output.
+	MaxOutputTokens = 8192
 )
 
-// fallbackModels defines the ordered chain of models to try when the primary
-// model hits a quota/rate-limit error. Each entry is tried with Search
-// Grounding enabled. If all grounded models fail, the primary model is tried
-// one last time without Search Grounding as a final fallback.
-var fallbackModels = []string{
-	"gemma-4-31b-it",       // Primary: Gemma 4 with Search Grounding
-	"gemini-2.5-flash",     // Fallback 1: higher RPM (10) and RPD (500), grounding 1500 RPD
-	"gemini-2.5-flash-lite", // Fallback 2: highest RPM (15) and RPD (1000), grounding 500 RPD
+// groundedModels is the ordered chain of models tried WITH Google Search
+// Grounding. Verified Sept 2026 on the free tier: Gemini 3.x returns 429 when
+// grounding is requested (even after a cooldown), so gemini-2.5-flash is the
+// only fast grounded option. gemma-4-31b-it is free and grounded too, but
+// slower (~22s with MINIMAL thinking vs ~91s with HIGH).
+var groundedModels = []string{
+	"gemini-2.5-flash",
+	"gemma-4-31b-it",
 }
+
+// noGroundingModel is the last-resort model used when every grounded model has
+// failed. It is free and fast, but returns no Search citations.
+const noGroundingModel = "gemini-3.5-flash-lite"
 
 // GemmaSynthesizer orchestrates LLM report generation using Gemma 4 via Google GenAI SDK.
 type GemmaSynthesizer struct {
@@ -39,6 +50,9 @@ type GemmaSynthesizer struct {
 	lastResetDay   int
 	history        []SynthesisResponse
 	logger         func(string, ...interface{})
+	// retryBackoff is the base delay for transient-error retries. Tests lower
+	// it to keep suites fast.
+	retryBackoff time.Duration
 }
 
 // NewGemmaSynthesizer initializes a new GemmaSynthesizer.
@@ -48,6 +62,7 @@ func NewGemmaSynthesizer(apiKey string, logger func(string, ...interface{})) *Ge
 		modelName:    DefaultModelName,
 		cellLastSent: make(map[string]time.Time),
 		logger:       logger,
+		retryBackoff: time.Second,
 	}
 }
 
@@ -141,13 +156,18 @@ func isTransientError(err error) bool {
 // callWithRetry wraps a model call with exponential backoff retry for transient errors.
 func (g *GemmaSynthesizer) callWithRetry(ctx context.Context, callFn func() (*genai.GenerateContentResponse, error), modelName string) (*genai.GenerateContentResponse, error) {
 	const maxRetries = 3
-	backoff := time.Second
+	backoff := g.retryBackoff
+	if backoff <= 0 {
+		backoff = time.Second
+	}
 
+	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		resp, err := callFn()
 		if err == nil {
 			return resp, nil
 		}
+		lastErr = err
 
 		// Only retry on transient errors
 		if !isTransientError(err) {
@@ -168,13 +188,17 @@ func (g *GemmaSynthesizer) callWithRetry(ctx context.Context, callFn func() (*ge
 		}
 	}
 
-	// All retries exhausted
-	return nil, fmt.Errorf("all %d retry attempts failed", maxRetries)
+	// All retries exhausted. Keep the original error (e.g. the 503) so the
+	// caller can classify it and fall back instead of losing the cause.
+	return nil, fmt.Errorf("all %d retry attempts failed: %w", maxRetries, lastErr)
 }
 
 // Synthesize generates a natural language seismic narrative report.
-// It tries a chain of models with Search Grounding when quota is exceeded,
-// falling back to the primary model without grounding as a last resort.
+//
+// It tries the grounded model chain in order and falls back to the next model
+// on ANY non-fatal error (quota, 5xx, timeouts, validation, empty/blocked
+// responses) — not only quota errors. If every grounded model fails, it tries a
+// fast model without Search Grounding as a last resort.
 func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest) (SynthesisResponse, error) {
 	now := time.Now()
 
@@ -203,79 +227,139 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 		g.logger("Starting synthesis for cell %s (Trigger: %s, PrevAnalyses: %d)", req.CellID, req.TriggerType, len(req.PreviousReports))
 	}
 
-	// Try each model in the fallback chain with Search Grounding
+	// Phase 1: grounded models, in order.
 	var lastErr error
-	for i, modelName := range fallbackModels {
+	for i, modelName := range groundedModels {
 		if g.logger != nil && i > 0 {
-			g.logger("Fallback chain: trying model %d/%d: %s", i+1, len(fallbackModels), modelName)
+			g.logger("Fallback chain: trying grounded model %d/%d: %s", i+1, len(groundedModels), modelName)
 		}
 
-		// Wrap call with retry logic for transient errors
-		resp, err := g.callWithRetry(ctx, func() (*genai.GenerateContentResponse, error) {
-			return g.callWithSearchGrounding(ctx, client, modelName, promptText)
-		}, modelName)
+		parsed, err := g.attemptModel(ctx, client, modelName, promptText, true)
 		if err == nil {
-			// Success
 			if g.logger != nil {
 				if i > 0 {
-					g.logger("Fallback succeeded with model: %s", modelName)
+					g.logger("Fallback succeeded with grounded model: %s", modelName)
 				} else {
 					g.logger("Primary model %s succeeded with Search Grounding", modelName)
 				}
 			}
-			g.updateRateLimit(req.CellID, now)
-			parsedRes := parseResponse(resp, modelName, now)
-			g.mu.Lock()
-			g.history = append(g.history, parsedRes)
-			if len(g.history) > 5 {
-				g.history = g.history[len(g.history)-5:]
-			}
-			g.mu.Unlock()
-			return parsedRes, nil
+			return g.complete(req, parsed, now), nil
 		}
 
-		// Check if it's a quota/rate-limit error
-		errStr := err.Error()
-		if !strings.Contains(errStr, "RESOURCE_EXHAUSTED") && !strings.Contains(errStr, "429") {
-			// Not a quota error, return immediately
+		lastErr = err
+		if isFatalError(err) {
 			return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", err)
 		}
-
-		// Quota error, save for potential final error message
-		lastErr = err
 		if g.logger != nil {
-			g.logger("Model %s hit quota limit, trying next fallback...", modelName)
+			g.logger("Model %s (grounded) failed: %v. Trying next model...", modelName, err)
 		}
 	}
 
-	// All grounded models failed with quota errors, try primary model without grounding
+	// Phase 2: last resort without grounding.
 	if g.logger != nil {
-		g.logger("All grounded models exhausted, trying %s without Search Grounding as final fallback", fallbackModels[0])
+		g.logger("All grounded models failed, trying %s without Search Grounding", noGroundingModel)
+	}
+	parsed, err := g.attemptModel(ctx, client, noGroundingModel, promptText, false)
+	if err == nil {
+		if g.logger != nil {
+			g.logger("Final fallback succeeded: %s without Search Grounding", noGroundingModel)
+		}
+		return g.complete(req, parsed, now), nil
 	}
 
-	// Wrap final fallback call with retry logic for transient errors
+	// Everything failed. Prefer the grounded model's error for the user.
+	if lastErr != nil {
+		if strings.Contains(lastErr.Error(), "RESOURCE_EXHAUSTED") || strings.Contains(lastErr.Error(), "429") {
+			return SynthesisResponse{}, fmt.Errorf("%s", g.extractQuotaErrorMessage(lastErr))
+		}
+		return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", lastErr)
+	}
+	return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", err)
+}
+
+// attemptModel performs one model call (with transient-error retries), validates
+// that the response carries usable text, and parses it into a report.
+func (g *GemmaSynthesizer) attemptModel(ctx context.Context, client *genai.Client, modelName, promptText string, grounded bool) (SynthesisResponse, error) {
+	label := modelName
+	if !grounded {
+		label = modelName + " (no grounding)"
+	}
+
 	resp, err := g.callWithRetry(ctx, func() (*genai.GenerateContentResponse, error) {
-		return g.callWithoutSearchGrounding(ctx, client, fallbackModels[0], promptText)
-	}, fallbackModels[0]+" (no grounding)")
+		if grounded {
+			return g.callWithSearchGrounding(ctx, client, modelName, promptText)
+		}
+		return g.callWithoutSearchGrounding(ctx, client, modelName, promptText)
+	}, label)
 	if err != nil {
-		// Final fallback also failed, return the original quota error
-		retryMsg := g.extractQuotaErrorMessage(lastErr)
-		return SynthesisResponse{}, fmt.Errorf("%s", retryMsg)
+		return SynthesisResponse{}, err
 	}
 
-	// Final fallback succeeded
-	if g.logger != nil {
-		g.logger("Final fallback succeeded: %s without Search Grounding", fallbackModels[0])
+	if !responseIsUsable(resp) {
+		return SynthesisResponse{}, fmt.Errorf("model %s returned an unusable response (finishReason=%s)", label, finishReasonOf(resp))
 	}
+
+	return parseResponse(resp, label, time.Now()), nil
+}
+
+// complete registers a successful generation against the rate limits and appends
+// it to the rolling session history.
+func (g *GemmaSynthesizer) complete(req SynthesisRequest, parsed SynthesisResponse, now time.Time) SynthesisResponse {
 	g.updateRateLimit(req.CellID, now)
-	parsedRes := parseResponse(resp, fallbackModels[0]+" (no grounding)", now)
 	g.mu.Lock()
-	g.history = append(g.history, parsedRes)
+	g.history = append(g.history, parsed)
 	if len(g.history) > 5 {
 		g.history = g.history[len(g.history)-5:]
 	}
 	g.mu.Unlock()
-	return parsedRes, nil
+	return parsed
+}
+
+// responseIsUsable reports whether a response contains at least one non-thought
+// text part. Empty or safety/recitation-blocked responses are treated as
+// failures so the caller can fall back to the next model.
+func responseIsUsable(resp *genai.GenerateContentResponse) bool {
+	if resp == nil || len(resp.Candidates) == 0 {
+		return false
+	}
+	cand := resp.Candidates[0]
+	if cand.Content == nil {
+		return false
+	}
+	for _, part := range cand.Content.Parts {
+		if part != nil && !part.Thought && strings.TrimSpace(part.Text) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// finishReasonOf returns the finish reason of the first candidate, or "none".
+func finishReasonOf(resp *genai.GenerateContentResponse) string {
+	if resp == nil || len(resp.Candidates) == 0 {
+		return "none"
+	}
+	return string(resp.Candidates[0].FinishReason)
+}
+
+// isFatalError reports whether the chain should stop instead of trying the next
+// model. Auth/permission errors and a cancelled parent context are fatal;
+// everything else (quota, 5xx, timeouts, 400 validation, unusable responses)
+// falls through to the next model.
+func isFatalError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) {
+		return true
+	}
+	errStr := err.Error()
+	for _, marker := range []string{"401", "403", "UNAUTHENTICATED", "PERMISSION_DENIED", "API key not valid", "API_KEY_INVALID"} {
+		if strings.Contains(errStr, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractQuotaErrorMessage parses a 429/RESOURCE_EXHAUSTED error and returns
@@ -305,26 +389,34 @@ func (g *GemmaSynthesizer) extractQuotaErrorMessage(err error) string {
 // - Gemini 2.5 series: thinkingBudget (token count)
 // - Gemini 3.x and Gemma: thinkingLevel (semantic levels)
 func (g *GemmaSynthesizer) callWithSearchGrounding(ctx context.Context, client *genai.Client, modelName, promptText string) (*genai.GenerateContentResponse, error) {
+	callCtx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+
 	tools := []*genai.Tool{
 		{GoogleSearch: &genai.GoogleSearch{}},
 	}
 	config := &genai.GenerateContentConfig{
-		Tools:          tools,
-		ThinkingConfig: g.buildThinkingConfig(modelName),
+		Tools:           tools,
+		ThinkingConfig:  g.buildThinkingConfig(modelName),
+		MaxOutputTokens: MaxOutputTokens,
 	}
-	return client.Models.GenerateContent(ctx, modelName, genai.Text(promptText), config)
+	return client.Models.GenerateContent(callCtx, modelName, genai.Text(promptText), config)
 }
 
-// callWithoutSearchGrounding invokes the model without any tools (fallback when quota is exceeded).
+// callWithoutSearchGrounding invokes the model without any tools (final fallback).
 func (g *GemmaSynthesizer) callWithoutSearchGrounding(ctx context.Context, client *genai.Client, modelName, promptText string) (*genai.GenerateContentResponse, error) {
+	callCtx, cancel := context.WithTimeout(ctx, CallTimeout)
+	defer cancel()
+
 	config := &genai.GenerateContentConfig{
-		ThinkingConfig: g.buildThinkingConfig(modelName),
+		ThinkingConfig:  g.buildThinkingConfig(modelName),
+		MaxOutputTokens: MaxOutputTokens,
 	}
-	return client.Models.GenerateContent(ctx, modelName, genai.Text(promptText), config)
+	return client.Models.GenerateContent(callCtx, modelName, genai.Text(promptText), config)
 }
 
 // buildThinkingConfig returns the appropriate thinking configuration for the given model.
-// Gemini 2.5 series uses thinkingBudget (token count), while Gemini 3.x and Gemma use thinkingLevel.
+// Gemini 2.5 series uses thinkingBudget (token count); Gemini 3.x and Gemma use thinkingLevel.
 func (g *GemmaSynthesizer) buildThinkingConfig(modelName string) *genai.ThinkingConfig {
 	// Gemini 2.5 series: use thinkingBudget
 	if strings.Contains(modelName, "gemini-2.5") {
@@ -332,9 +424,17 @@ func (g *GemmaSynthesizer) buildThinkingConfig(modelName string) *genai.Thinking
 			ThinkingBudget: genai.Ptr(int32(-1)), // Dynamic thinking budget
 		}
 	}
-	// Gemini 3.x and Gemma: use thinkingLevel
+	// Gemma 4 only accepts MINIMAL or HIGH (LOW, MEDIUM and thinkingBudget
+	// return 400). MINIMAL keeps latency ~22s instead of ~91s.
+	if strings.HasPrefix(modelName, "gemma") {
+		return &genai.ThinkingConfig{
+			ThinkingLevel: genai.ThinkingLevelMinimal,
+		}
+	}
+	// Gemini 3.x: semantic thinking level. MINIMAL keeps the last-resort
+	// response fast.
 	return &genai.ThinkingConfig{
-		ThinkingLevel: genai.ThinkingLevel("HIGH"),
+		ThinkingLevel: genai.ThinkingLevelMinimal,
 	}
 }
 

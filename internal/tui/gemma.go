@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -101,7 +102,7 @@ func (m Model) renderGemmaView() string {
 		statusPill = gcOnlineStyle.Render("● ONLINE")
 	}
 
-	modelPill := gcModelStyle.Render("gemma-4-31b-it")
+	modelPill := gcModelStyle.Render("gemini-2.5-flash + Gemma 4")
 	groundedPill := gcGroundedStyle.Render("[GOOGLE SEARCH GROUNDED]")
 	reportsPill := lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF")).Render(fmt.Sprintf("Reportes: %d", len(m.GemmaReports)))
 
@@ -231,9 +232,7 @@ func (m Model) renderGemmaView() string {
 		if len(rep.Citations) > 0 {
 			s += "\n  " + gcCitationTitle.Render("🔍 FUENTES VERIFICADAS (Google Search Grounding):") + "\n"
 			for _, c := range rep.Citations {
-				s += fmt.Sprintf("    • %s ➔ %s\n",
-					lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FAFC")).Render(c.Title),
-					gcCitationLink.Render(c.URL))
+				s += fmt.Sprintf("    • %s\n", renderCitation(c))
 			}
 		}
 	} else {
@@ -341,4 +340,39 @@ func processBoldText(s string, boldStyle, normStyle lipgloss.Style) string {
 func wrapTerminalLine(text string, width int) []string {
 	rendered := lipgloss.NewStyle().Width(width).Render(text)
 	return strings.Split(rendered, "\n")
+}
+
+// renderCitation formats a grounding source for the terminal. Google Search
+// returns opaque vertexaisearch.cloud.google.com redirect URLs that are
+// unreadable, so we show the source domain (the citation title, or the URL host
+// when there is no title) and only append the raw URL when it is a real link.
+func renderCitation(c alert.Citation) string {
+	label := strings.TrimSpace(c.Title)
+	if label == "" {
+		label = urlHost(c.URL)
+	}
+	if label == "" {
+		label = "fuente"
+	}
+
+	text := lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FAFC")).Render(label)
+	if c.URL != "" && !isGroundingRedirect(c.URL) {
+		text += " ➔ " + gcCitationLink.Render(c.URL)
+	}
+	return text
+}
+
+// isGroundingRedirect reports whether the URL is a Google Search grounding
+// redirect rather than a human-readable source link.
+func isGroundingRedirect(raw string) bool {
+	return strings.Contains(raw, "vertexaisearch.cloud.google.com/grounding-api-redirect")
+}
+
+// urlHost returns the hostname of a URL without the leading "www.".
+func urlHost(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimPrefix(u.Hostname(), "www.")
 }
