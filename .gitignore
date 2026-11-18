@@ -22,4 +22,6 @@ data/
 run.ps1
 .env
 .tokensave
+.engram/
+.atl/
 
