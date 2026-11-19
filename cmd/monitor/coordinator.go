@@ -327,9 +327,32 @@ func (c *Coordinator) TriggerManualAnalysisWithEngine(ctx context.Context, engin
 		for _, cell := range c.gapAnalyzer.GetAllCells() {
 			allSismos = append(allSismos, c.gapAnalyzer.GetCellEvents(cell, now.Add(-365*24*time.Hour))...)
 		}
-		allProjections := alert.ComputeProjections(allSismos, now)
+		rawProjections := alert.ComputeProjections(allSismos, now)
+
+		phaseByCell := make(map[string]alert.CellPhase, len(snapshot))
+		activePhases := make([]alert.CellPhase, 0, len(snapshot))
+		for _, ph := range snapshot {
+			phaseByCell[ph.GridCell] = ph
+			if ph.Phase != alert.PhaseSilencio {
+				activePhases = append(activePhases, ph)
+			}
+		}
+
+		filteredProjections := make([]alert.FaultProjection, 0, len(rawProjections))
+		for _, p := range rawProjections {
+			if ph, ok := phaseByCell[p.GridCell]; ok {
+				p.Phase = ph
+			}
+			isActive := p.Phase.Phase != alert.PhaseEstable && p.Phase.Phase != alert.PhaseSilencio
+			if p.EventCount >= 5 || isActive {
+				filteredProjections = append(filteredProjections, p)
+			}
+		}
 
 		proj := alert.AnalyzeGridCell(cellID, events, now)
+		if ph, ok := phaseByCell[cellID]; ok {
+			proj.Phase = ph
+		}
 		req := llm.SynthesisRequest{
 			TriggerType:             "ANALISIS_MANUAL_TUI",
 			FaultName:               alert.GetFaultName(mainshock.Latitude, mainshock.Longitude),
@@ -340,9 +363,9 @@ func (c *Coordinator) TriggerManualAnalysisWithEngine(ctx context.Context, engin
 			Mainshock:               mainshock,
 			RecentEvents:            events,
 			Phase:                   targetCell.Phase,
-			RecentHistoricalContext: "Análisis manual solicitado por el usuario en la TUI. Analizar panorama tectónico actual, doblete histórico del 24 de junio de 2026 e inestabilidad cortical.",
-			AllProjections:          allProjections,
-			AllPhases:               snapshot,
+			RecentHistoricalContext: "Análisis manual solicitado por el usuario en la TUI. " + llm.DefaultHistoricalContext,
+			AllProjections:          filteredProjections,
+			AllPhases:               activePhases,
 			LiveSismos:              events,
 			IsManual:                true,
 			Engine:                  normalizedEngine,

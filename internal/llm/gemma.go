@@ -21,7 +21,11 @@ const (
 	// block the analysis indefinitely.
 	CallTimeout = 60 * time.Second
 	// MaxOutputTokens caps the narrative length and prevents runaway output.
-	MaxOutputTokens = 8192
+	MaxOutputTokens = 2500
+	// Gemini25ThinkingBudget caps Gemini 2.5's hidden thinking tokens so
+	// grounded synthesis stays fast (~5-8s) instead of spending ~20s in
+	// unbounded dynamic thinking (-1).
+	Gemini25ThinkingBudget int32 = 1024
 )
 
 const (
@@ -449,10 +453,10 @@ func (g *GemmaSynthesizer) callWithoutSearchGrounding(ctx context.Context, clien
 // buildThinkingConfig returns the appropriate thinking configuration for the given model.
 // Gemini 2.5 series uses thinkingBudget (token count); Gemini 3.x and Gemma use thinkingLevel.
 func (g *GemmaSynthesizer) buildThinkingConfig(modelName string) *genai.ThinkingConfig {
-	// Gemini 2.5 series: use thinkingBudget
+	// Gemini 2.5 series: cap thinkingBudget to avoid ~20s latency spikes while keeping reasoning intact.
 	if strings.Contains(modelName, "gemini-2.5") {
 		return &genai.ThinkingConfig{
-			ThinkingBudget: genai.Ptr(int32(-1)), // Dynamic thinking budget
+			ThinkingBudget: genai.Ptr(Gemini25ThinkingBudget),
 		}
 	}
 	// Gemma 4 only accepts MINIMAL or HIGH (LOW, MEDIUM and thinkingBudget

@@ -125,9 +125,13 @@ func AnalyzeGridCell(cell string, cellSismos []Sismo, now time.Time) FaultProjec
 	var mainshock Sismo
 	hasMainshock := false
 	var weightedEnergy float64
+	countAboveMc := 0
 
 	for _, s := range cellSismos {
 		magnitudes = append(magnitudes, s.Magnitude)
+		if s.Magnitude >= 2.5 {
+			countAboveMc++
+		}
 		w := DepthWeight(s.Depth)
 		weightedEnergy += w * math.Pow(10, 1.5*s.Magnitude)
 
@@ -151,8 +155,11 @@ func AnalyzeGridCell(cell string, cellSismos []Sismo, now time.Time) FaultProjec
 		proj.FaultName = "Falla Desconocida"
 	}
 
-	// Gutenberg-Richter b-value (Mc = 2.5, deltaMb = 0.1)
-	proj.BValue = CalculateBValue(magnitudes, 2.5, 0.1)
+	// Gutenberg-Richter b-value (Mc = 2.5, deltaMb = 0.1). Require at least 5
+	// events above Mc so tiny samples (1-3 events) do not produce bogus low b-values.
+	if countAboveMc >= 5 {
+		proj.BValue = CalculateBValue(magnitudes, 2.5, 0.1)
+	}
 	proj.DynamicRate = CalculateDynamicRate(cellSismos, now, PhaseEstable)
 
 	// Omori & Bath Calculations

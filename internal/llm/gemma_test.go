@@ -99,8 +99,8 @@ func TestBuildThinkingConfigPerModelFamily(t *testing.T) {
 	synth := NewGemmaSynthesizer("dummy-key", nil)
 
 	flashCfg := synth.buildThinkingConfig("gemini-2.5-flash")
-	if flashCfg.ThinkingBudget == nil || *flashCfg.ThinkingBudget != -1 {
-		t.Error("gemini-2.5 should use dynamic thinkingBudget (-1)")
+	if flashCfg.ThinkingBudget == nil || *flashCfg.ThinkingBudget != Gemini25ThinkingBudget {
+		t.Errorf("gemini-2.5 should use thinkingBudget %d, got %v", Gemini25ThinkingBudget, flashCfg.ThinkingBudget)
 	}
 	if flashCfg.ThinkingLevel != "" {
 		t.Errorf("gemini-2.5 must not set ThinkingLevel, got %q", flashCfg.ThinkingLevel)

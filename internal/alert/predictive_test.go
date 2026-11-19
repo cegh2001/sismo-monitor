@@ -321,3 +321,33 @@ func TestCalculateDynamicRate(t *testing.T) {
 		t.Errorf("Expected normal rate (%f) to be lower than swarm rate (%f)", rateNormal, rateSwarm)
 	}
 }
+
+func TestAnalyzeGridCellRequiresFiveEventsAboveMcForBValue(t *testing.T) {
+	now := time.Now()
+
+	t.Run("fewer than 5 events above Mc yields 0", func(t *testing.T) {
+		small := []Sismo{
+			{Magnitude: 5.0, Latitude: 10.5, Longitude: -67.0, Time: now.Add(-48 * time.Hour)},
+			{Magnitude: 5.0, Latitude: 10.5, Longitude: -67.0, Time: now.Add(-47 * time.Hour)},
+			{Magnitude: 4.6, Latitude: 10.5, Longitude: -67.0, Time: now.Add(-46 * time.Hour)},
+		}
+		proj := AnalyzeGridCell("G_13_13", small, now)
+		if proj.BValue != 0.0 {
+			t.Errorf("Expected BValue 0.0 for <5 events >= 2.5, got %f", proj.BValue)
+		}
+	})
+
+	t.Run("at least 5 events above Mc computes b-value", func(t *testing.T) {
+		enough := []Sismo{
+			{Magnitude: 2.5, Latitude: 10.5, Longitude: -67.0, Time: now.Add(-5 * time.Hour)},
+			{Magnitude: 2.8, Latitude: 10.5, Longitude: -67.0, Time: now.Add(-4 * time.Hour)},
+			{Magnitude: 3.1, Latitude: 10.5, Longitude: -67.0, Time: now.Add(-3 * time.Hour)},
+			{Magnitude: 3.4, Latitude: 10.5, Longitude: -67.0, Time: now.Add(-2 * time.Hour)},
+			{Magnitude: 4.0, Latitude: 10.5, Longitude: -67.0, Time: now.Add(-1 * time.Hour)},
+		}
+		proj := AnalyzeGridCell("G_test", enough, now)
+		if proj.BValue <= 0.0 {
+			t.Errorf("Expected positive BValue for >=5 events >= 2.5, got %f", proj.BValue)
+		}
+	})
+}
