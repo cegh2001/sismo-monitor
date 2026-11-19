@@ -5,8 +5,11 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"sismo-monitor/internal/alert"
@@ -20,7 +23,7 @@ type SimulationServer struct {
 	out            chan<- alert.Sismo
 	logger         func(string, ...interface{})
 	gapAnalyzer    *alert.GapAnalyzer
-	onGemmaAnalyze func()
+	onGemmaAnalyze func(engine string)
 }
 
 // NewSimulationServer initializes a SimulationServer.
@@ -34,7 +37,7 @@ func NewSimulationServer(port string, out chan<- alert.Sismo, gapAnalyzer *alert
 }
 
 // SetGemmaAnalyzeHandler registers a callback invoked when POST /api/gemma/analyze is called.
-func (s *SimulationServer) SetGemmaAnalyzeHandler(h func()) {
+func (s *SimulationServer) SetGemmaAnalyzeHandler(h func(engine string)) {
 	s.onGemmaAnalyze = h
 }
 
@@ -220,17 +223,33 @@ func (s *SimulationServer) handleGemmaAnalyze(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	var reqBody struct {
+		Engine string `json:"engine"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil && !errors.Is(err, io.EOF) {
+			http.Error(w, "Invalid JSON payload", http.StatusBadRequest)
+			return
+		}
+	}
+
+	engine := "gemini"
+	if strings.EqualFold(strings.TrimSpace(reqBody.Engine), "gemma") {
+		engine = "gemma"
+	}
+
 	if s.onGemmaAnalyze != nil {
-		s.log("POST /api/gemma/analyze received: triggering manual Gemma 4 synthesis")
-		go s.onGemmaAnalyze()
+		s.log("POST /api/gemma/analyze received: triggering manual %s synthesis", engine)
+		go s.onGemmaAnalyze(engine)
 	} else {
-		s.log("POST /api/gemma/analyze received but no handler configured")
+		s.log("POST /api/gemma/analyze received (engine=%s) but no handler configured", engine)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"status":  "triggered",
-		"message": "Manual Gemma 4 analysis requested",
+		"engine":  engine,
+		"message": fmt.Sprintf("Manual %s analysis requested", engine),
 	})
 }

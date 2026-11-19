@@ -104,4 +104,5 @@ type Model struct {
 	startTime           time.Time
 	gemmaGenerating     bool
 	gemmaError          string
+	gemmaEngine         string
 }

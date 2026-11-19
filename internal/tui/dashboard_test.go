@@ -682,3 +682,58 @@ func TestTruncate(t *testing.T) {
 		}
 	}
 }
+
+func TestViewDualAnalysisOptions(t *testing.T) {
+	tests := []struct {
+		name       string
+		key        string
+		wantEngine string
+		wantActive string
+	}{
+		{
+			name:       "g opens ViewGemma in gemini mode",
+			key:        "g",
+			wantEngine: "gemini",
+			wantActive: "[g] GEMINI (ACTIVO)",
+		},
+		{
+			name:       "m opens ViewGemma in gemma mode",
+			key:        "m",
+			wantEngine: "gemma",
+			wantActive: "[m] GEMMA 4 (ACTIVO)",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			updateChan := make(chan tea.Msg, 10)
+			m := NewModel(updateChan, "8080")
+
+			dashView := stripANSI(m.View())
+			if !strings.Contains(dashView, "[g] IA Gemini") || !strings.Contains(dashView, "[m] IA Gemma 4") {
+				t.Errorf("Dashboard footer should advertise both Gemini and Gemma 4 shortcuts, got:\n%s", dashView)
+			}
+
+			res, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
+			gotModel := res.(Model)
+
+			if gotModel.currentView != ViewGemma {
+				t.Fatalf("Expected ViewGemma after pressing %q, got %v", tc.key, gotModel.currentView)
+			}
+			if gotModel.gemmaEngine != tc.wantEngine {
+				t.Errorf("Expected gemmaEngine %q, got %q", tc.wantEngine, gotModel.gemmaEngine)
+			}
+
+			view := stripANSI(gotModel.View())
+			if !strings.Contains(view, "[g] GEMINI") {
+				t.Errorf("Expected ViewGemma to render Gemini option, got:\n%s", view)
+			}
+			if !strings.Contains(view, "[m] GEMMA 4") {
+				t.Errorf("Expected ViewGemma to render Gemma 4 option, got:\n%s", view)
+			}
+			if !strings.Contains(view, tc.wantActive) {
+				t.Errorf("Expected ViewGemma to highlight %q, got:\n%s", tc.wantActive, view)
+			}
+		})
+	}
+}

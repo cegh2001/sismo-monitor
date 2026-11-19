@@ -202,17 +202,17 @@ func main() {
 	gapCoord := NewCoordinator(gapAnalyzer, notifier, tuiChan, tuiLog)
 	gapCoord.SetStateStore(coordStateStore)
 
-	// Initialize Gemma 4 LLM Synthesizer with fallback chain
+	// Initialize LLM Synthesizer with Gemini cascade and Gemma 4 reserve
 	if cfg.GeminiAPIKey != "" {
 		gemma := llm.NewGemmaSynthesizer(cfg.GeminiAPIKey, tuiLog)
 		gapCoord.SetGemmaSynthesizer(gemma)
-		tuiLog("LLM Synthesizer ENABLED (chain: gemma-4-31b-it → gemini-2.5-flash → gemini-2.5-flash-lite → no-grounding)")
+		tuiLog("LLM Synthesizer ENABLED (Gemini: 2.5-flash[G] → 3.5-flash → 3-flash → 3.5/3.1-lite | Gemma 4: 31b[G] → 26b[G])")
 	} else {
 		tuiLog("LLM Synthesizer DISABLED (GEMINI_API_KEY not configured)")
 	}
 
-	simServer.SetGemmaAnalyzeHandler(func() {
-		gapCoord.TriggerManualAnalysis(ctx)
+	simServer.SetGemmaAnalyzeHandler(func(engine string) {
+		gapCoord.TriggerManualAnalysisWithEngine(ctx, engine)
 	})
 
 	// Coordinator processing loop

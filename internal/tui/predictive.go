@@ -205,7 +205,7 @@ func (m Model) renderPredictiveView() string {
 	s += legendBoxStyle.Render(legendText) + "\n"
 
 	s += singleDivider
-	s += "  [g] Análisis Gemma 4 | [p] Volver al panel de monitoreo | [q] Salir\n"
+	s += "  [g] IA Gemini | [m] IA Gemma 4 | [p] Volver al panel de monitoreo | [q] Salir\n"
 	s += doubleDivider
 	return s
 }

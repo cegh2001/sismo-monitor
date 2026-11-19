@@ -85,12 +85,22 @@ var (
 			Padding(0, 1)
 )
 
-// renderGemmaView builds the modernized Gemma 4 analysis view with OpenCode / Gemini CLI UX.
+// renderGemmaView builds the dual Gemini / Gemma 4 analysis view with OpenCode / Gemini CLI UX.
 func (m Model) renderGemmaView() string {
 	var s string
 
-	// Header Banner (OpenCode / Gemini CLI aesthetic)
-	tag := gcTagStyle.Render("🤖 GEMMA 4")
+	var geminiPill, gemmaPill, modelChain, genBanner string
+	if m.gemmaEngine == "gemma" {
+		geminiPill = gcTabInactive.Render("✨ [g] GEMINI")
+		gemmaPill = gcTagStyle.Render("🤖 [m] GEMMA 4 (ACTIVO)")
+		modelChain = "gemma-4-31b-it → gemma-4-26b-a4b-it (Grounded → No-Grounding)"
+		genBanner = "Sintetizando informe sismológico con cascada Gemma 4 y Google Search Grounding..."
+	} else {
+		geminiPill = gcTagStyle.Render("✨ [g] GEMINI (ACTIVO)")
+		gemmaPill = gcTabInactive.Render("🤖 [m] GEMMA 4")
+		modelChain = "2.5-flash (Grounded) → 3.5-flash → 3-flash → 3.5/3.1-lite (+Gemma 4 reserva)"
+		genBanner = "Sintetizando informe sismológico con cascada Gemini y Google Search Grounding..."
+	}
 
 	var statusPill string
 	if m.gemmaError != "" {
@@ -102,12 +112,13 @@ func (m Model) renderGemmaView() string {
 		statusPill = gcOnlineStyle.Render("● ONLINE")
 	}
 
-	modelPill := gcModelStyle.Render("gemini-2.5-flash + Gemma 4")
+	modelPill := gcModelStyle.Render(modelChain)
 	groundedPill := gcGroundedStyle.Render("[GOOGLE SEARCH GROUNDED]")
 	reportsPill := lipgloss.NewStyle().Foreground(lipgloss.Color("#9CA3AF")).Render(fmt.Sprintf("Reportes: %d", len(m.GemmaReports)))
 
 	s += doubleDivider
-	s += fmt.Sprintf("  %s  %s  │  Modelo: %s  │  %s  │  %s\n", tag, statusPill, modelPill, groundedPill, reportsPill)
+	s += fmt.Sprintf("  %s %s  %s  │  %s  │  %s\n", geminiPill, gemmaPill, statusPill, groundedPill, reportsPill)
+	s += fmt.Sprintf("  Cascada: %s\n", modelPill)
 	s += doubleDivider
 
 	// Error or Active Status Message Banner
@@ -118,7 +129,7 @@ func (m Model) renderGemmaView() string {
 		frame := gemmaSpinnerFrames[m.gemmaSpinnerFrame%len(gemmaSpinnerFrames)]
 		s += fmt.Sprintf("  %s %s\n",
 			gcGeneratingStyle.Render(frame),
-			gcGeneratingStyle.Render("Sintetizando informe sismológico contextualizado con Gemma 4 y Google Search Grounding..."))
+			gcGeneratingStyle.Render(genBanner))
 		s += singleDivider
 	}
 
@@ -236,11 +247,11 @@ func (m Model) renderGemmaView() string {
 			}
 		}
 	} else {
-		s += "\n  Aún no se ha generado ningún reporte. Presione [g] para solicitar el primer análisis sismológico.\n\n"
+		s += "\n  Aún no se ha generado ningún reporte. Presione [g] para analizar con Gemini o [m] para analizar con Gemma 4.\n\n"
 	}
 
 	s += singleDivider
-	footerText := fmt.Sprintf(" [g] Solicitar Análisis  │  [←/→/Tab] Seleccionar Reporte (%d/%d)  │  [↑/↓/PgUp/PgDn] Scroll Cuerpo  │  [d] Dashboard  │  [q] Salir",
+	footerText := fmt.Sprintf(" [g] Analizar con Gemini  │  [m] Analizar con Gemma 4  │  [←/→/Tab] Seleccionar Reporte (%d/%d)  │  [↑/↓/PgUp/PgDn] Scroll Cuerpo  │  [d] Dashboard  │  [q] Salir",
 		m.gemmaSelectedReport+1, numReports)
 	s += gcFooterStyle.Render(footerText) + "\n"
 	s += doubleDivider

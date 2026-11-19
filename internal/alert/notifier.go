@@ -70,15 +70,23 @@ func (n *PushoverNotifier) SendNow(alert Alert) error {
 	return n.send(alert)
 }
 
-// SendSynthesisReport dispatches an LLM narrative report from Gemma 4 via Pushover using HTML formatting.
+func synthesisEngineTag(modelUsed string) string {
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(modelUsed)), "gemma") {
+		return "Gemma 4"
+	}
+	return "Gemini"
+}
+
+// SendSynthesisReport dispatches an LLM narrative report via Pushover using HTML formatting.
 func (n *PushoverNotifier) SendSynthesisReport(report SynthesisResponse) error {
 	if n.appToken == "" || n.userKey == "" {
 		return fmt.Errorf("pushover app token or user key missing")
 	}
 
-	title := fmt.Sprintf("[Gemma 4] %s", report.ReportType)
+	tag := synthesisEngineTag(report.ModelUsed)
+	title := fmt.Sprintf("[%s] %s", tag, report.ReportType)
 	if report.Summary != "" {
-		title = fmt.Sprintf("[Gemma 4] %s — %s", report.ReportType, report.Summary)
+		title = fmt.Sprintf("[%s] %s — %s", tag, report.ReportType, report.Summary)
 		if len(title) > 250 {
 			title = title[:247] + "..."
 		}
@@ -137,7 +145,7 @@ func (n *PushoverNotifier) SendSynthesisReport(report SynthesisResponse) error {
 	}
 
 	if n.logger != nil {
-		n.logger("Pushover Gemma 4 report sent: %s (%s)", report.ReportType, report.ModelUsed)
+		n.logger("Pushover %s report sent: %s (%s)", tag, report.ReportType, report.ModelUsed)
 	}
 	return nil
 }

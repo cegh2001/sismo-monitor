@@ -24,21 +24,57 @@ const (
 	MaxOutputTokens = 8192
 )
 
-// groundedModels is the ordered chain of models tried WITH Google Search
-// Grounding. Verified Sept 2026 on the free tier: Gemini 3.x returns 429 when
-// grounding is requested (even after a cooldown), so gemini-2.5-flash is the
-// only fast grounded option. gemma-4-31b-it is free and grounded too, but
-// slower (~22s with MINIMAL thinking vs ~91s with HIGH).
-var groundedModels = []string{
-	"gemini-2.5-flash",
-	"gemma-4-31b-it",
+const (
+	EngineGemini = "gemini"
+	EngineGemma  = "gemma"
+)
+
+type modelStep struct {
+	Name     string
+	Grounded bool
 }
 
-// noGroundingModel is the last-resort model used when every grounded model has
-// failed. It is free and fast, but returns no Search citations.
-const noGroundingModel = "gemini-3.5-flash-lite"
+// geminiCascade is the primary cascade of modern free-tier Gemini models.
+// Verified against v1beta/models: gemini-2.5-flash is the only free-tier model
+// supporting Google Search Grounding; Gemini 3.x models work fast and reliably
+// without Search Grounding when ThinkingLevel is MINIMAL.
+var geminiCascade = []modelStep{
+	{Name: "gemini-2.5-flash", Grounded: true},
+	{Name: "gemini-3.5-flash", Grounded: false},
+	{Name: "gemini-3-flash-preview", Grounded: false},
+	{Name: "gemini-3.5-flash-lite", Grounded: false},
+	{Name: "gemini-3.1-flash-lite", Grounded: false},
+}
 
-// GemmaSynthesizer orchestrates LLM report generation using Gemma 4 via Google GenAI SDK.
+// gemmaCascade is the Gemma 4 cascade, used both when explicitly selected in
+// the TUI and as the final reserve after geminiCascade.
+var gemmaCascade = []modelStep{
+	{Name: "gemma-4-31b-it", Grounded: true},
+	{Name: "gemma-4-26b-a4b-it", Grounded: true},
+	{Name: "gemma-4-31b-it", Grounded: false},
+	{Name: "gemma-4-26b-a4b-it", Grounded: false},
+}
+
+func normalizeEngine(engine string) string {
+	if strings.EqualFold(strings.TrimSpace(engine), EngineGemma) {
+		return EngineGemma
+	}
+	return EngineGemini
+}
+
+func stepsForEngine(engine string) []modelStep {
+	if normalizeEngine(engine) == EngineGemma {
+		steps := make([]modelStep, len(gemmaCascade))
+		copy(steps, gemmaCascade)
+		return steps
+	}
+	steps := make([]modelStep, 0, len(geminiCascade)+len(gemmaCascade))
+	steps = append(steps, geminiCascade...)
+	steps = append(steps, gemmaCascade...)
+	return steps
+}
+
+// GemmaSynthesizer orchestrates LLM report generation using Gemini and Gemma 4 cascades via Google GenAI SDK.
 type GemmaSynthesizer struct {
 	mu             sync.Mutex
 	apiKey         string
@@ -195,10 +231,10 @@ func (g *GemmaSynthesizer) callWithRetry(ctx context.Context, callFn func() (*ge
 
 // Synthesize generates a natural language seismic narrative report.
 //
-// It tries the grounded model chain in order and falls back to the next model
-// on ANY non-fatal error (quota, 5xx, timeouts, validation, empty/blocked
-// responses) — not only quota errors. If every grounded model fails, it tries a
-// fast model without Search Grounding as a last resort.
+// Depending on req.Engine ("gemini" default or "gemma"), it walks the ordered
+// model cascade and falls back to the next step on ANY non-fatal error (quota,
+// 5xx, timeouts, validation, empty/blocked responses). In "gemini" mode, the
+// Gemma 4 cascade serves as the final reserve if all Gemini models fail.
 func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest) (SynthesisResponse, error) {
 	now := time.Now()
 
@@ -218,63 +254,58 @@ func (g *GemmaSynthesizer) Synthesize(ctx context.Context, req SynthesisRequest)
 	}
 	g.mu.Unlock()
 
+	engine := normalizeEngine(req.Engine)
+	req.Engine = engine
+
 	promptText, err := BuildPrompt(req)
 	if err != nil {
 		return SynthesisResponse{}, err
 	}
 
+	steps := stepsForEngine(engine)
 	if g.logger != nil {
-		g.logger("Starting synthesis for cell %s (Trigger: %s, PrevAnalyses: %d)", req.CellID, req.TriggerType, len(req.PreviousReports))
+		g.logger("Starting synthesis for cell %s (Engine: %s, Trigger: %s, PrevAnalyses: %d)", req.CellID, engine, req.TriggerType, len(req.PreviousReports))
 	}
 
-	// Phase 1: grounded models, in order.
+	var firstQuotaErr error
 	var lastErr error
-	for i, modelName := range groundedModels {
+	for i, step := range steps {
+		mode := "no grounding"
+		if step.Grounded {
+			mode = "grounded"
+		}
 		if g.logger != nil && i > 0 {
-			g.logger("Fallback chain: trying grounded model %d/%d: %s", i+1, len(groundedModels), modelName)
+			g.logger("Fallback cascade: trying step %d/%d: %s (%s)", i+1, len(steps), step.Name, mode)
 		}
 
-		parsed, err := g.attemptModel(ctx, client, modelName, promptText, true)
+		parsed, err := g.attemptModel(ctx, client, step.Name, promptText, step.Grounded)
 		if err == nil {
 			if g.logger != nil {
 				if i > 0 {
-					g.logger("Fallback succeeded with grounded model: %s", modelName)
+					g.logger("Fallback succeeded at step %d/%d: %s (%s)", i+1, len(steps), step.Name, mode)
 				} else {
-					g.logger("Primary model %s succeeded with Search Grounding", modelName)
+					g.logger("Primary model %s (%s) succeeded", step.Name, mode)
 				}
 			}
 			return g.complete(req, parsed, now), nil
 		}
 
 		lastErr = err
+		if firstQuotaErr == nil && (strings.Contains(err.Error(), "RESOURCE_EXHAUSTED") || strings.Contains(err.Error(), "429")) {
+			firstQuotaErr = err
+		}
 		if isFatalError(err) {
 			return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", err)
 		}
 		if g.logger != nil {
-			g.logger("Model %s (grounded) failed: %v. Trying next model...", modelName, err)
+			g.logger("Model %s (%s) failed: %v. Trying next model...", step.Name, mode, err)
 		}
 	}
 
-	// Phase 2: last resort without grounding.
-	if g.logger != nil {
-		g.logger("All grounded models failed, trying %s without Search Grounding", noGroundingModel)
+	if firstQuotaErr != nil {
+		return SynthesisResponse{}, fmt.Errorf("%s", g.extractQuotaErrorMessage(firstQuotaErr))
 	}
-	parsed, err := g.attemptModel(ctx, client, noGroundingModel, promptText, false)
-	if err == nil {
-		if g.logger != nil {
-			g.logger("Final fallback succeeded: %s without Search Grounding", noGroundingModel)
-		}
-		return g.complete(req, parsed, now), nil
-	}
-
-	// Everything failed. Prefer the grounded model's error for the user.
-	if lastErr != nil {
-		if strings.Contains(lastErr.Error(), "RESOURCE_EXHAUSTED") || strings.Contains(lastErr.Error(), "429") {
-			return SynthesisResponse{}, fmt.Errorf("%s", g.extractQuotaErrorMessage(lastErr))
-		}
-		return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", lastErr)
-	}
-	return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", err)
+	return SynthesisResponse{}, fmt.Errorf("GenerateContent failed: %w", lastErr)
 }
 
 // attemptModel performs one model call (with transient-error retries), validates

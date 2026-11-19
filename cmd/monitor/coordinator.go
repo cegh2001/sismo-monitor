@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -219,7 +220,7 @@ func (c *Coordinator) EmitGapSnapshot(ctx context.Context, now time.Time) []aler
 					}
 					resp, err := c.gemma.Synthesize(ctx, req)
 					if err != nil {
-						c.log("Gemma 4 synthesis failed for cell %s: %v", cell, err)
+						c.log("LLM synthesis failed for cell %s: %v", cell, err)
 						return
 					}
 					c.sendTui(tui.MsgGemmaReport{Report: resp})
@@ -259,11 +260,24 @@ func lastMostRelevantEvent(events []alert.Sismo) alert.Sismo {
 	return best
 }
 
-// TriggerManualAnalysis forces an immediate Gemma 4 natural language analysis
-// of the active seismic state and pushes the narrative report to TUI and Pushover.
+// TriggerManualAnalysis forces an immediate Gemini natural language analysis
+// of the active seismic state and pushes the narrative report to TUI and notifier.
 func (c *Coordinator) TriggerManualAnalysis(ctx context.Context) {
+	c.TriggerManualAnalysisWithEngine(ctx, llm.EngineGemini)
+}
+
+// TriggerManualAnalysisWithEngine forces an immediate natural language analysis
+// using the selected engine ("gemini" or "gemma") and pushes the report to TUI and notifier.
+func (c *Coordinator) TriggerManualAnalysisWithEngine(ctx context.Context, engine string) {
+	normalizedEngine := llm.EngineGemini
+	engineLabel := "Gemini"
+	if strings.EqualFold(strings.TrimSpace(engine), llm.EngineGemma) {
+		normalizedEngine = llm.EngineGemma
+		engineLabel = "Gemma 4"
+	}
+
 	if c.gemma == nil {
-		c.log("Manual Gemma 4 analysis requested, but GemmaSynthesizer is disabled (GEMINI_API_KEY missing)")
+		c.log("Manual %s analysis requested, but LLM synthesizer is disabled (GEMINI_API_KEY missing)", engineLabel)
 		c.sendTui(tui.MsgGemmaStatus{
 			Generating: false,
 			Message:    "❌ No se puede generar análisis: GEMINI_API_KEY no configurada en .env",
@@ -331,14 +345,15 @@ func (c *Coordinator) TriggerManualAnalysis(ctx context.Context) {
 			AllPhases:               snapshot,
 			LiveSismos:              events,
 			IsManual:                true,
+			Engine:                  normalizedEngine,
 		}
-		c.log("Triggering manual Gemma 4 analysis for cell %s...", cellID)
+		c.log("Triggering manual %s analysis for cell %s...", engineLabel, cellID)
 		resp, err := c.gemma.Synthesize(ctx, req)
 		if err != nil {
-			c.log("Manual Gemma 4 analysis failed: %v", err)
+			c.log("Manual %s analysis failed: %v", engineLabel, err)
 			c.sendTui(tui.MsgGemmaStatus{
 				Generating: false,
-				Message:    fmt.Sprintf("❌ Error al generar análisis con Gemma 4: %v", err),
+				Message:    fmt.Sprintf("❌ Error al generar análisis con %s: %v", engineLabel, err),
 			})
 			return
 		}

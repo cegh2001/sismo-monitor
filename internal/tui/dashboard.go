@@ -41,6 +41,7 @@ func NewModel(updateChan <-chan tea.Msg, port string) Model {
 		termWidth:        97,
 		currentView:      ViewDashboard,
 		startTime:        time.Now(),
+		gemmaEngine:      "gemini",
 	}
 }
 
@@ -82,20 +83,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.predictiveScroll = 0
 				m.statusMsg = "Switched to Projections & Crustal Stress Monitor"
 				return m, nil
-			case "g":
-				if time.Since(m.startTime) < simCooldown {
-					m.gemmaError = "Cooldown activo — espere 2s después del inicio"
-					return m, nil
-				}
-				if m.gemmaGenerating {
-					m.statusMsg = "⚠️ Generación en curso. Por favor espere..."
-					return m, nil
-				}
-				m.gemmaError = ""
-				m.gemmaGenerating = true
-				m.gemmaSpinnerFrame = 0
-				m.statusMsg = "Solicitando análisis sismológico a Gemma 4 (Google Search Grounded)..."
-				return m, tea.Batch(triggerGemmaAnalysis(m.Port), tickGemmaSpinner())
+			case "g", "1":
+				return m.startAnalysis("gemini")
+			case "m", "2":
+				return m.startAnalysis("gemma")
 			case "left", "h", "[":
 				if len(m.GemmaReports) > 0 {
 					m.gemmaSelectedReport--
@@ -175,13 +166,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.predictiveScroll = 0
 				return m, nil
 		case "g":
-			// Open Gemma view without triggering analysis
-			// User must press 'g' again inside ViewGemma to generate
-			m.currentView = ViewGemma
-			m.gemmaScroll = 0
-			m.gemmaError = ""
-			m.statusMsg = "Vista Gemma 4 abierta. Presione [g] para generar análisis."
-			return m, nil
+			return m.openAnalysisView("gemini")
+		case "m":
+			return m.openAnalysisView("gemma")
 		case "end":
 				content := m.renderPredictiveView()
 				totalLines := strings.Count(content, "\n") + 1
@@ -226,13 +213,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = "Triggering instability test alerts (5 hist, 3 swarm)..."
 			return m, triggerInstabilitySimulation(m.Port)
 		case "g":
-			// Open Gemma view without triggering analysis
-			// User must press 'g' again inside ViewGemma to generate
-			m.currentView = ViewGemma
-			m.gemmaScroll = 0
-			m.gemmaError = ""
-			m.statusMsg = "Vista Gemma 4 abierta. Presione [g] para generar análisis."
-			return m, nil
+			return m.openAnalysisView("gemini")
+		case "m":
+			return m.openAnalysisView("gemma")
 		case "p":
 			m.currentView = ViewPredictive
 			m.predictiveScroll = 0
@@ -296,7 +279,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.gemmaBodyScroll = 0
 		m.gemmaGenerating = false
 		m.gemmaError = ""
-		m.statusMsg = fmt.Sprintf("✅ Reporte Gemma 4 ([%s]) recibido", msg.Report.ReportType)
+		m.statusMsg = fmt.Sprintf("✅ Reporte IA ([%s]) recibido", msg.Report.ReportType)
 		return m, SubscribeToUpdates(m.updateChan)
 
 	case MsgGemmaStatus:
@@ -457,26 +440,73 @@ func triggerInstabilitySimulation(port string) tea.Cmd {
 	}
 }
 
-func triggerGemmaAnalysis(port string) tea.Cmd {
+func (m Model) openAnalysisView(engine string) (Model, tea.Cmd) {
+	m.currentView = ViewGemma
+	m.gemmaScroll = 0
+	m.gemmaError = ""
+	if engine == "gemma" {
+		m.gemmaEngine = "gemma"
+		m.statusMsg = "Vista IA abierta (Modo Gemma 4). Presione [m] para Gemma 4 o [g] para Gemini."
+	} else {
+		m.gemmaEngine = "gemini"
+		m.statusMsg = "Vista IA abierta (Modo Gemini). Presione [g] para Gemini o [m] para Gemma 4."
+	}
+	return m, nil
+}
+
+func (m Model) startAnalysis(engine string) (Model, tea.Cmd) {
+	if engine == "gemma" {
+		m.gemmaEngine = "gemma"
+	} else {
+		m.gemmaEngine = "gemini"
+	}
+	if time.Since(m.startTime) < simCooldown {
+		m.gemmaError = "Cooldown activo — espere 2s después del inicio"
+		return m, nil
+	}
+	if m.gemmaGenerating {
+		m.statusMsg = "⚠️ Generación en curso. Por favor espere..."
+		return m, nil
+	}
+	m.gemmaError = ""
+	m.gemmaGenerating = true
+	m.gemmaSpinnerFrame = 0
+	if m.gemmaEngine == "gemma" {
+		m.statusMsg = "Solicitando análisis sismológico con cascada Gemma 4..."
+	} else {
+		m.statusMsg = "Solicitando análisis sismológico con cascada Gemini..."
+	}
+	return m, tea.Batch(triggerGemmaAnalysis(m.Port, m.gemmaEngine), tickGemmaSpinner())
+}
+
+func triggerGemmaAnalysis(port string, engine string) tea.Cmd {
+	if engine != "gemma" {
+		engine = "gemini"
+	}
 	return func() tea.Msg {
 		url := fmt.Sprintf("http://localhost:%s/api/gemma/analyze", port)
-		resp, err := http.Post(url, "application/json", bytes.NewBuffer([]byte("{}")))
+		payload, _ := json.Marshal(map[string]string{"engine": engine})
+		resp, err := http.Post(url, "application/json", bytes.NewBuffer(payload))
 		if err != nil {
 			return MsgGemmaStatus{
 				Generating: false,
-				Message:    fmt.Sprintf("❌ Error al conectar con API Gemma: %v", err),
+				Message:    fmt.Sprintf("❌ Error al conectar con API IA (%s): %v", engine, err),
 			}
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			return MsgGemmaStatus{
 				Generating: false,
-				Message:    fmt.Sprintf("❌ Solicitud a Gemma rechazada (HTTP %d)", resp.StatusCode),
+				Message:    fmt.Sprintf("❌ Solicitud a IA (%s) rechazada (HTTP %d)", engine, resp.StatusCode),
 			}
+		}
+		engineLabel := "Gemini"
+		if engine == "gemma" {
+			engineLabel = "Gemma 4"
 		}
 		return MsgGemmaStatus{
 			Generating: true,
-			Message:    "🤖 Generando análisis sismológico con Gemma 4 (Google Search Grounding)... Por favor espere.",
+			Message:    fmt.Sprintf("🤖 Generando análisis sismológico con cascada %s... Por favor espere.", engineLabel),
 		}
 	}
 }

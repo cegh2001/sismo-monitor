@@ -120,7 +120,7 @@ func (m Model) View() string {
 		}
 	}
 	s += singleDivider
-	s += "  [q] Quit | [g] Análisis Gemma 4 | [t] Trigger Critical | [s] Trigger Swarm | [i] Trigger Instability | [p] Projections\n"
+	s += "  [q] Quit | [g] IA Gemini | [m] IA Gemma 4 | [t] Trigger Critical | [s] Trigger Swarm | [i] Trigger Instability | [p] Projections\n"
 	s += "  [Arrows] Up/Down: Scroll Logs | Left/Right: Scroll Sismos\n"
 	s += doubleDivider
 	return s

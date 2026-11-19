@@ -98,22 +98,32 @@ func findString(s, sub string) bool {
 func TestBuildThinkingConfigPerModelFamily(t *testing.T) {
 	synth := NewGemmaSynthesizer("dummy-key", nil)
 
-	gemmaCfg := synth.buildThinkingConfig("gemma-4-31b-it")
-	if gemmaCfg.ThinkingLevel != genai.ThinkingLevelMinimal {
-		t.Errorf("gemma should use MINIMAL thinking, got %q", gemmaCfg.ThinkingLevel)
-	}
-	if gemmaCfg.ThinkingBudget != nil {
-		t.Error("gemma must not set ThinkingBudget (API returns 400)")
-	}
-
 	flashCfg := synth.buildThinkingConfig("gemini-2.5-flash")
 	if flashCfg.ThinkingBudget == nil || *flashCfg.ThinkingBudget != -1 {
 		t.Error("gemini-2.5 should use dynamic thinkingBudget (-1)")
 	}
+	if flashCfg.ThinkingLevel != "" {
+		t.Errorf("gemini-2.5 must not set ThinkingLevel, got %q", flashCfg.ThinkingLevel)
+	}
 
-	flashLiteCfg := synth.buildThinkingConfig("gemini-3.5-flash-lite")
-	if flashLiteCfg.ThinkingLevel != genai.ThinkingLevelMinimal {
-		t.Errorf("gemini-3.x should use MINIMAL thinking, got %q", flashLiteCfg.ThinkingLevel)
+	minimalModels := []string{
+		"gemini-3.5-flash",
+		"gemini-3-flash-preview",
+		"gemini-3.5-flash-lite",
+		"gemini-3.1-flash-lite",
+		"gemma-4-31b-it",
+		"gemma-4-26b-a4b-it",
+	}
+	for _, model := range minimalModels {
+		t.Run(model, func(t *testing.T) {
+			cfg := synth.buildThinkingConfig(model)
+			if cfg.ThinkingLevel != genai.ThinkingLevelMinimal {
+				t.Errorf("%s should use MINIMAL thinking, got %q", model, cfg.ThinkingLevel)
+			}
+			if cfg.ThinkingBudget != nil {
+				t.Errorf("%s must not set ThinkingBudget, got %d", model, *cfg.ThinkingBudget)
+			}
+		})
 	}
 }
 
@@ -153,6 +163,26 @@ func TestSynthesizeFallsBackOn503(t *testing.T) {
 	assertFallbackHits(t, hits)
 }
 
+// newMockSynthesizer spins up an httptest Gemini API server using handler and
+// returns a GemmaSynthesizer wired to it with fast retry backoff.
+func newMockSynthesizer(t *testing.T, handler http.HandlerFunc) (*GemmaSynthesizer, func()) {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	client, err := genai.NewClient(context.Background(), &genai.ClientConfig{
+		Backend:     genai.BackendGeminiAPI,
+		APIKey:      "test-key",
+		HTTPOptions: genai.HTTPOptions{BaseURL: srv.URL + "/"},
+	})
+	if err != nil {
+		srv.Close()
+		t.Fatalf("failed to create test client: %v", err)
+	}
+	synth := NewGemmaSynthesizer("test-key", nil)
+	synth.client = client
+	synth.retryBackoff = time.Millisecond
+	return synth, srv.Close
+}
+
 // runFallbackScenario spins up a mock Gemini API that fails the primary
 // grounded model with failStatus and succeeds for any other model, then runs a
 // manual synthesis and returns the ordered list of requested models.
@@ -160,35 +190,21 @@ func runFallbackScenario(t *testing.T, failStatus int, failBody string) []string
 	t.Helper()
 
 	var hits []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	synth, cleanup := newMockSynthesizer(t, func(w http.ResponseWriter, r *http.Request) {
 		model := modelFromPath(r.URL.Path)
 		hits = append(hits, model)
 
-		if model == groundedModels[0] {
+		if model == geminiCascade[0].Name {
 			w.WriteHeader(failStatus)
 			_, _ = io.WriteString(w, failBody)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"CLASIFICACION: CALMA_REAJUSTE\n\nResumen Ejecutivo: sin cambios significativos."}]},"finishReason":"STOP","index":0}]}`)
-	}))
-	defer srv.Close()
-
-	ctx := context.Background()
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		Backend:     genai.BackendGeminiAPI,
-		APIKey:      "test-key",
-		HTTPOptions: genai.HTTPOptions{BaseURL: srv.URL + "/"},
 	})
-	if err != nil {
-		t.Fatalf("failed to create test client: %v", err)
-	}
+	defer cleanup()
 
-	synth := NewGemmaSynthesizer("test-key", nil)
-	synth.client = client
-	synth.retryBackoff = time.Millisecond
-
-	resp, err := synth.Synthesize(ctx, SynthesisRequest{
+	resp, err := synth.Synthesize(context.Background(), SynthesisRequest{
 		TriggerType: "TEST",
 		CellID:      "G_1_1",
 		IsManual:    true,
@@ -196,8 +212,12 @@ func runFallbackScenario(t *testing.T, failStatus int, failBody string) []string
 	if err != nil {
 		t.Fatalf("expected fallback to succeed, got error: %v", err)
 	}
-	if resp.ModelUsed != groundedModels[1] {
-		t.Errorf("expected fallback model %q, got %q", groundedModels[1], resp.ModelUsed)
+	wantModel := geminiCascade[1].Name
+	if !geminiCascade[1].Grounded {
+		wantModel += " (no grounding)"
+	}
+	if resp.ModelUsed != wantModel {
+		t.Errorf("expected fallback model %q, got %q", wantModel, resp.ModelUsed)
 	}
 	if strings.TrimSpace(resp.Body) == "" {
 		t.Error("expected non-empty report body")
@@ -210,15 +230,82 @@ func assertFallbackHits(t *testing.T, hits []string) {
 	if len(hits) == 0 {
 		t.Fatal("expected at least one request")
 	}
-	if hits[0] != groundedModels[0] {
-		t.Errorf("first request should target %q, got %q", groundedModels[0], hits[0])
+	if hits[0] != geminiCascade[0].Name {
+		t.Errorf("first request should target %q, got %q", geminiCascade[0].Name, hits[0])
 	}
 	for _, h := range hits {
-		if h == groundedModels[1] {
+		if h == geminiCascade[1].Name {
 			return
 		}
 	}
-	t.Errorf("expected a request to the fallback model %q, hits=%v", groundedModels[1], hits)
+	t.Errorf("expected a request to the fallback model %q, hits=%v", geminiCascade[1].Name, hits)
+}
+
+func TestSynthesizeGeminiFallsBackToGemmaReserve(t *testing.T) {
+	var hits []string
+	synth, cleanup := newMockSynthesizer(t, func(w http.ResponseWriter, r *http.Request) {
+		model := modelFromPath(r.URL.Path)
+		hits = append(hits, model)
+
+		if strings.HasPrefix(model, "gemini-") {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"code":429,"message":"quota exceeded","status":"RESOURCE_EXHAUSTED"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"CLASIFICACION: CALMA_REAJUSTE\n\nResumen Ejecutivo: reserva gemma operativa."}]},"finishReason":"STOP","index":0}]}`)
+	})
+	defer cleanup()
+
+	resp, err := synth.Synthesize(context.Background(), SynthesisRequest{
+		TriggerType: "TEST",
+		CellID:      "G_1_1",
+		IsManual:    true,
+	})
+	if err != nil {
+		t.Fatalf("expected Gemma reserve fallback to succeed, got error: %v", err)
+	}
+	if resp.ModelUsed != gemmaCascade[0].Name {
+		t.Errorf("expected Gemma reserve model %q, got %q", gemmaCascade[0].Name, resp.ModelUsed)
+	}
+	if len(hits) != len(geminiCascade)+1 {
+		t.Errorf("expected %d attempts (%d Gemini + 1 Gemma), got %d (%v)", len(geminiCascade)+1, len(geminiCascade), len(hits), hits)
+	}
+}
+
+func TestSynthesizeGemmaEngineDirect(t *testing.T) {
+	var hits []string
+	synth, cleanup := newMockSynthesizer(t, func(w http.ResponseWriter, r *http.Request) {
+		model := modelFromPath(r.URL.Path)
+		hits = append(hits, model)
+
+		if model == gemmaCascade[0].Name {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"error":{"code":503,"message":"The request timed out. Please try again.","status":"UNAVAILABLE"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"CLASIFICACION: CONFIRMACION\n\nResumen Ejecutivo: respuesta gemma 26b."}]},"finishReason":"STOP","index":0}]}`)
+	})
+	defer cleanup()
+
+	resp, err := synth.Synthesize(context.Background(), SynthesisRequest{
+		TriggerType: "TEST",
+		CellID:      "G_1_1",
+		IsManual:    true,
+		Engine:      EngineGemma,
+	})
+	if err != nil {
+		t.Fatalf("expected Gemma direct engine fallback to succeed, got error: %v", err)
+	}
+	if resp.ModelUsed != gemmaCascade[1].Name {
+		t.Errorf("expected %q, got %q", gemmaCascade[1].Name, resp.ModelUsed)
+	}
+	for _, h := range hits {
+		if !strings.HasPrefix(h, "gemma-") {
+			t.Errorf("Gemma engine must only call gemma-* models, saw %q in %v", h, hits)
+		}
+	}
 }
 
 func modelFromPath(path string) string {

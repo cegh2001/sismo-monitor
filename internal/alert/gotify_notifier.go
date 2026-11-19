@@ -218,15 +218,16 @@ func (n *GotifyNotifier) send(alert Alert) error {
 	return nil
 }
 
-// SendSynthesisReport dispatches an LLM narrative report from Gemma via Gotify with Markdown formatting.
+// SendSynthesisReport dispatches an LLM narrative report via Gotify with Markdown formatting.
 func (n *GotifyNotifier) SendSynthesisReport(report SynthesisResponse) error {
 	if n.serverURL == "" || n.appToken == "" {
 		return fmt.Errorf("gotify server URL or app token missing")
 	}
 
-	title := fmt.Sprintf("[Gemma] %s", report.ReportType)
+	tag := synthesisEngineTag(report.ModelUsed)
+	title := fmt.Sprintf("[%s] %s", tag, report.ReportType)
 	if report.Summary != "" {
-		title = fmt.Sprintf("[Gemma] %s — %s", report.ReportType, report.Summary)
+		title = fmt.Sprintf("[%s] %s — %s", tag, report.ReportType, report.Summary)
 		if len(title) > 250 {
 			title = title[:247] + "..."
 		}
@@ -283,7 +284,7 @@ func (n *GotifyNotifier) SendSynthesisReport(report SynthesisResponse) error {
 	}
 
 	if n.logger != nil {
-		n.logger("Gotify Gemma report sent: %s (%s)", report.ReportType, report.ModelUsed)
+		n.logger("Gotify %s report sent: %s (%s)", tag, report.ReportType, report.ModelUsed)
 	}
 	return nil
 }
